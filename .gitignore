@@ -70,6 +70,10 @@ web_modules/
 .env.*
 !.env.example
 
+# Test files with hardcoded credentials
+_test_db.js
+_test_script.ps1
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
