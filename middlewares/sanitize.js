@@ -2,7 +2,7 @@ function sanitizeInput(value) {
   if (typeof value === "string") {
     return value
       .replace(/<[^>]*>/g, "")
-      .replace(/[\\$'"<>]/g, "")
+      .replace(/['"<>]/g, "")
       .trim();
   }
   return value;
