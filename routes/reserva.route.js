@@ -1,6 +1,5 @@
 const router = require("express").Router();
 const reservaCtrl = require("../controllers/reserva.controller");
-const { verifyToken } = require("../middlewares/auth.middleware");
 const { validate } = require("../middlewares/validator");
 const { reservaLimiter } = require("../middlewares/rateLimiter");
 
@@ -14,9 +13,26 @@ const createReservaSchema = [
   { name: "huespedes", type: "number", required: true, min: 1 },
 ];
 
+const consultarSchema = [
+  { name: "codigo", type: "string", required: true, minLength: 4 },
+  { name: "email", type: "email", required: true },
+];
+
+const cancelarSchema = [
+  { name: "codigo", type: "string", required: true, minLength: 4 },
+  { name: "email", type: "email", required: true },
+];
+
+// El huesped no tiene cuenta: se identifica con codigo + email.
+// El GET valida contra req.query, el PUT contra req.body.
+router.get(
+  "/consultar",
+  reservaLimiter,
+  validate(consultarSchema, "query"),
+  reservaCtrl.consultar
+);
+router.put("/cancelar", reservaLimiter, validate(cancelarSchema), reservaCtrl.cancelarPublica);
+
 router.post("/", reservaLimiter, validate(createReservaSchema), reservaCtrl.create);
-router.get("/mis-reservas", verifyToken, reservaCtrl.getMisReservas);
-router.get("/:id", verifyToken, reservaCtrl.getById);
-router.put("/:id/cancelar", verifyToken, reservaCtrl.cancel);
 
 module.exports = router;

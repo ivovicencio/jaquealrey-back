@@ -1,8 +1,9 @@
 const router = require("express").Router();
 const mpCtrl = require("../controllers/mp.controller");
 const { verifyToken } = require("../middlewares/auth.middleware");
+const { reservaLimiter } = require("../middlewares/rateLimiter");
 
-router.post("/crear-preferencia", verifyToken, mpCtrl.createPreference);
+router.post("/crear-preferencia", verifyToken, reservaLimiter, mpCtrl.createPreference);
 router.post("/webhook", mpCtrl.webhook);
 router.get("/success", mpCtrl.success);
 router.get("/pending", mpCtrl.pending);

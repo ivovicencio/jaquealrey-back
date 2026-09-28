@@ -1,6 +1,6 @@
 const router = require("express").Router();
 const authCtrl = require("../controllers/auth.controller");
-const { verifyToken } = require("../middlewares/auth.middleware");
+const { verifyAdminToken } = require("../middlewares/auth.middleware");
 const { validate } = require("../middlewares/validator");
 const { loginLimiter, registerLimiter } = require("../middlewares/rateLimiter");
 
@@ -23,6 +23,7 @@ const changePasswordSchema = [
 
 router.post("/register", registerLimiter, validate(registerSchema), authCtrl.register);
 router.post("/login", loginLimiter, validate(loginSchema), authCtrl.login);
-router.put("/password", verifyToken, validate(changePasswordSchema), authCtrl.changePassword);
+// El huesped no tiene cuenta, asi que cambiar contrasena es solo del personal.
+router.put("/password", verifyAdminToken, validate(changePasswordSchema), authCtrl.changePassword);
 
 module.exports = router;

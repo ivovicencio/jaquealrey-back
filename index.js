@@ -1,23 +1,24 @@
 require("dotenv").config();
 
 const express = require("express");
-const compression = require("compression");
-const helmet = require("helmet");
-const cors = require("cors");
-const http = require("http");
-const { pool, cache } = require("./db");
-const { globalLimiter } = require("./middlewares/rateLimiter");
-const errorHandler = require("./middlewares/errorHandler");
-const { initSocket } = require("./socket/socket");
-const { sanitize } = require("./middlewares/sanitize");
+const compression = require("compression"); //comprime respuestas http
+const helmet = require("helmet"); //protege la aplicacion de vulnerabilidades conocidas
+const cors = require("cors"); //permite solicitudes de otros dominios
+const http = require("http"); //para crear el servidor http
+const { pool, cache } = require("./db"); //pool de conexiones a la base de datos y cache
+const { globalLimiter } = require("./middlewares/rateLimiter"); //para limitar la cantidad de solicitudes por IP
+const errorHandler = require("./middlewares/errorHandler"); //manejo de errores
+const { initSocket } = require("./socket/socket"); //inicializa el socket.io, socket para notificaciones en tiempo real
+const { sanitize } = require("./middlewares/sanitize"); //sanitiza las entradas de los usuarios para prevenir ataques XSS
 
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const isProduction = process.env.NODE_ENV === "production";
+const isProduction = process.env.NODE_ENV === "production"; //verificamos si estamos en produccion
 
-const REQUIRED_ENV = ["JWT_SECRET", "DATABASE_URL"];
-for (const envVar of REQUIRED_ENV) {
+const REQUIRED_ENV = ["JWT_SECRET", "DATABASE_URL"]; //vemos si tenemos las variables de entorno necesarias para que la app funcione
+//se inicializan en un array
+for (const envVar of REQUIRED_ENV) { //recorre para ver si estan configuradas
   if (!process.env[envVar]) {
     console.error(`[FATAL] ${envVar} no está configurado`);
     process.exit(1);
@@ -35,23 +36,26 @@ if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
 }
 
 app.use(compression());
+
+//para proteger la app
 app.use(
   helmet({
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'none'"],
-        connectSrc: ["'self'"],
-        frameSrc: ["'none'"],
-        scriptSrc: ["'self'"],
+    contentSecurityPolicy: { //para proteger la app de ataques XSS y clickjacking
+      directives: { 
+        defaultSrc: ["'none'"], //solo carga contenido del mismo origen
+        connectSrc: ["'self'"], //solo permite conexiones al mismo origen
+        frameSrc: ["'none'"], //solo permite cargar contenido en iframes del mismo origen
+        scriptSrc: ["'self'"], //solo deja cargar scripts del mismo origen
       },
     },
-    referrerPolicy: { policy: "no-referrer" },
-    hsts: isProduction ? { maxAge: 31536000, includeSubDomains: true, preload: true } : false,
-    noSniff: true,
-    frameguard: { action: "deny" },
+    referrerPolicy: { policy: "no-referrer" }, //no enviar el referer en las solicitudes, referer es la url de la pagina que hace la solicitud, esto es para proteger la privacidad del usuario
+    hsts: isProduction ? { maxAge: 31536000, includeSubDomains: true, preload: true } : false, //para que el navegador solo use https, maxage es el tiempo en segundos que el navegador recordara que solo debe usar https, includesubdomains sirve para que todos los subdominios tambien usen https, preload es para que el navegador agregue el dominio a la lista de precarga de HSTS
+    noSniff: true, //para que el navegador no intente adivinar el tipo de contenido, esto es para proteger la privacidad del usuario
+    frameguard: { action: "deny" }, //para que el navegador no permita que la app se cargue en un iframe, esto es para proteger la app de ataques clickjacking
   })
 );
 
+//aca se configura cors, para que solo se pueda acceder a la api desde los dominios permitidos, si no se configura cors, cualquier dominio podria acceder a la api y eso es un riesgo de seguridad
 const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:4200")
   .split(",")
   .map((o) => o.trim())
@@ -68,17 +72,19 @@ app.use(
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(new Error("No autorizado por CORS"));
+        const denied = new Error("No autorizado por CORS");
+        denied.status = 403;
+        callback(denied);
       }
     },
     credentials: true,
   })
 );
 
-app.disable("x-powered-by");
+app.disable("x-powered-by"); //se desactiva la cabecera x-powered-by para que no se sepa que la app esta hecha con express, esto es para proteger la app de ataques dirigidos a express
 
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: false, limit: "1mb" }));
+app.use(express.json({ limit: "1mb" })); //aca se configura el limite de tamaño de las solicitudes json, para evitar ataques de denegacion de servicio, si no se configura esto, un atacante podria enviar solicitudes muy grandes y saturar el servidor
+app.use(express.urlencoded({ extended: false, limit: "1mb" })); 
 
 app.use(sanitize);
 
@@ -92,7 +98,6 @@ const authRoutes = require("./routes/auth.route");
 const hotelRoutes = require("./routes/hotel.route");
 const habitacionRoutes = require("./routes/habitacion.route");
 const reservaRoutes = require("./routes/reserva.route");
-const clienteRoutes = require("./routes/cliente.route");
 const adminRoutes = require("./routes/admin.route");
 const mpRoutes = require("./routes/mp.route");
 
@@ -100,7 +105,6 @@ app.use("/api/auth", authRoutes);
 app.use("/api/hotel", hotelRoutes);
 app.use("/api/habitaciones", habitacionRoutes);
 app.use("/api/reservas", reservaRoutes);
-app.use("/api/clientes", clienteRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/pagos", mpRoutes);
 

@@ -15,6 +15,15 @@ authCtrl.register = async (req, res, next) => {
   try {
     const { nombre, apellido, telefono, email, password } = req.body;
 
+    // El huesped no se registra: este endpoint solo crea la cuenta del personal del hotel.
+    if (!ADMIN_SECRET || req.body.admin_secret !== ADMIN_SECRET) {
+      return error(res, "No autorizado", 403);
+    }
+
+    if (email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+      return error(res, "Solo se puede crear la cuenta de administrador del hotel", 403);
+    }
+
     if (!PASSWORD_REGEX.test(password)) {
       return error(res, "La contraseña debe tener al menos 8 caracteres, una mayúscula, una minúscula y un número", 400);
     }
@@ -22,13 +31,6 @@ authCtrl.register = async (req, res, next) => {
     const existing = await executeQuery("SELECT id FROM buscar_cliente_por_email($1)", [email]);
     if (existing.rows.length > 0) {
       return error(res, "El email ya está registrado", 409);
-    }
-
-    const isAdminEmail = email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-    if (isAdminEmail && ADMIN_SECRET) {
-      if (req.body.admin_secret !== ADMIN_SECRET) {
-        return error(res, "Código de administrador inválido", 403);
-      }
     }
 
     const salt = await bcrypt.genSalt(12);
@@ -42,7 +44,7 @@ authCtrl.register = async (req, res, next) => {
     );
 
     const user = result.rows[0];
-    const role = isAdminEmail ? "admin" : "cliente";
+    const role = "admin";
     const token = jwt.sign({ id: user.id, email: user.email, role }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN,
     });
@@ -73,7 +75,11 @@ authCtrl.login = async (req, res, next) => {
       return error(res, "Email o contraseña incorrectos", 401);
     }
 
-    const role = email === ADMIN_EMAIL ? "admin" : "cliente";
+    // El rol se decide con el email que viene de la BASE, nunca con el que
+    // escribio el visitante, y la comparacion es insensible a mayusculas.
+    const role =
+      String(user.email).toLowerCase() === String(ADMIN_EMAIL).toLowerCase() ? "admin" : "cliente";
+
     const token = jwt.sign({ id: user.id, email: user.email, role }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN,
     });

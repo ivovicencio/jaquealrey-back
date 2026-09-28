@@ -1,23 +1,199 @@
-const { executeQuery } = require("../db");
+const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
+const { executeQuery, withTransaction } = require("../db");
 const { success, error } = require("../utils/response");
 const { generateCode } = require("../utils/generateCode");
 const { emitNuevaReserva, emitReservaActualizada } = require("../socket/socket");
-const { notifyNewReserva } = require("../helpers/whatsappHelper");
+const {
+  notifyNewReserva,
+  notifyCancelacionHuesped,
+  HOTEL_PHONE,
+} = require("../helpers/whatsappHelper");
 
 const reservaCtrl = {};
+
+const HORAS_CANCELACION = Number(process.env.CANCELACION_HORAS || 24);
+const TZ_HOTEL = -3; // America/Argentina no aplica horario de verano desde 2009
+const TELEFONO_HOTEL = HOTEL_PHONE;
+
+// pg devuelve las columnas DATE como Date a la medianoche local, no como string.
+function fechaISO(valor) {
+  if (valor instanceof Date) {
+    const mes = String(valor.getMonth() + 1).padStart(2, "0");
+    const dia = String(valor.getDate()).padStart(2, "0");
+    return `${valor.getFullYear()}-${mes}-${dia}`;
+  }
+  return String(valor).slice(0, 10);
+}
+
+function horasHastaEntrada(fechaEntrada) {
+  const medianoche = Date.parse(`${fechaISO(fechaEntrada)}T00:00:00Z`);
+  if (Number.isNaN(medianoche)) return 0;
+  return (medianoche - (Date.now() + TZ_HOTEL * 3600000)) / 3600000;
+}
+
+function puedeCancelar(estado, fechaEntrada) {
+  return ["Pendiente", "Confirmada"].includes(estado) && horasHastaEntrada(fechaEntrada) > HORAS_CANCELACION;
+}
+
+// El huesped no tiene cuenta: se identifica con el codigo de reserva + su email.
+// El WHERE exige ambos datos, asi que un email incorrecto no revela nada.
+// No se devuelven email ni telefono: la consulta publica no los necesita.
+const CONSULTA_POR_CODIGO = `
+  SELECT r.id, r.codigo, r.fecha_entrada, r.fecha_salida, r.huespedes,
+         r.precio_total, r.estado, r.notas, r.created_at,
+         h.numero as habitacion_numero, h.nombre as habitacion_nombre, h.tipo,
+         c.nombre as cliente_nombre, c.apellido as cliente_apellido
+  FROM Reserva r
+  JOIN Habitacion h ON r.habitacion_id = h.id
+  JOIN Cliente c ON r.cliente_id = c.id
+  WHERE UPPER(r.codigo) = UPPER($1) AND LOWER(c.email) = LOWER($2)`;
+
+reservaCtrl.consultar = async (req, res, next) => {
+  try {
+    const codigo = String(req.query.codigo || "").trim();
+    const email = String(req.query.email || "").trim();
+
+    if (!codigo || !email) {
+      return error(res, "Debe indicar el codigo de reserva y el email", 400);
+    }
+
+    const result = await executeQuery(CONSULTA_POR_CODIGO, [codigo, email], { role: "admin" });
+
+    if (result.rows.length === 0) {
+      return error(res, "No encontramos una reserva con ese codigo y email", 404);
+    }
+
+    const reserva = result.rows[0];
+    const horas = horasHastaEntrada(reserva.fecha_entrada);
+
+    return success(res, "Reserva encontrada", {
+      ...reserva,
+      puede_cancelar: puedeCancelar(reserva.estado, reserva.fecha_entrada),
+      horas_para_cancelar: Math.max(0, Math.floor(horas)),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+reservaCtrl.cancelarPublica = async (req, res, next) => {
+  try {
+    const { codigo, email, motivo } = req.body;
+    const codigoLimpio = String(codigo || "").trim();
+    const emailLimpio = String(email || "").trim();
+
+    if (!codigoLimpio || !emailLimpio) {
+      return error(res, "Debe indicar el codigo de reserva y el email", 400);
+    }
+
+    // Una sola transaccion: el lock se mantiene hasta el UPDATE, asi dos
+    // intentos simultaneos no pueden cancelar dos veces la misma reserva.
+    const resultado = await withTransaction(async (client) => {
+      const encontrada = await client.query(`${CONSULTA_POR_CODIGO} FOR UPDATE OF r`, [
+        codigoLimpio,
+        emailLimpio,
+      ]);
+
+      if (encontrada.rows.length === 0) {
+        return { motivo: 404 };
+      }
+
+      const reserva = encontrada.rows[0];
+
+      if (!["Pendiente", "Confirmada"].includes(reserva.estado)) {
+        return { motivo: "estado", estado: reserva.estado };
+      }
+
+      if (horasHastaEntrada(reserva.fecha_entrada) <= HORAS_CANCELACION) {
+        return { motivo: "plazo" };
+      }
+
+      const updated = await client.query(
+        "UPDATE Reserva SET estado = 'Cancelada', updated_at = NOW() WHERE id = $1 RETURNING *",
+        [reserva.id]
+      );
+
+      await client.query(
+        `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por, ip_address)
+         VALUES ($1, 'Cancelada', $2, 'cliente', $3)`,
+        [reserva.id, motivo || "Cancelacion solicitada por el huesped", req.ip || req.socket.remoteAddress]
+      );
+
+      // Datos de contacto solo para el aviso al hotel. Se piden por separado
+      // porque la consulta publica del codigo no expone telefono ni email.
+      const contacto = await client.query(
+        `SELECT c.nombre as cliente_nombre, c.apellido as cliente_apellido,
+                c.telefono as cliente_telefono, c.email as cliente_email,
+                h.numero as habitacion_numero, h.nombre as habitacion_nombre
+         FROM Reserva r
+         JOIN Cliente c ON c.id = r.cliente_id
+         JOIN Habitacion h ON h.id = r.habitacion_id
+         WHERE r.id = $1`,
+        [reserva.id]
+      );
+
+      const datos = contacto.rows[0];
+
+      return {
+        reserva: updated.rows[0],
+        datos: {
+          cliente: {
+            nombre: datos.cliente_nombre,
+            apellido: datos.cliente_apellido,
+            telefono: datos.cliente_telefono,
+            email: datos.cliente_email,
+          },
+          habitacion: {
+            numero: datos.habitacion_numero,
+            nombre: datos.habitacion_nombre,
+          },
+        },
+      };
+    }, { role: "admin" });
+
+    if (resultado.motivo === 404) {
+      return error(res, "No encontramos una reserva con ese codigo y email", 404);
+    }
+    if (resultado.motivo === "estado") {
+      return error(res, `La reserva ya esta ${resultado.estado.toLowerCase()}`, 400);
+    }
+    if (resultado.motivo === "plazo") {
+      return error(
+        res,
+        `Para cancelaciones con menos de ${HORAS_CANCELACION} horas de anticipacion, contactanos al ${TELEFONO_HOTEL}`,
+        400
+      );
+    }
+
+    emitReservaActualizada(resultado.reserva);
+
+    // El hotel tiene que enterarse de la cancelacion: la habitacion vuelve a
+    // quedar libre para esas fechas y puede ofrecerla a otro huesped.
+    if (resultado.datos) {
+      notifyCancelacionHuesped(resultado.reserva, resultado.datos.cliente, resultado.datos.habitacion, motivo);
+    }
+
+    return success(res, "Reserva cancelada", resultado.reserva);
+  } catch (err) {
+    next(err);
+  }
+};
 
 reservaCtrl.create = async (req, res, next) => {
   try {
     const { nombre, apellido, telefono, email, habitacion_id, fecha_entrada, fecha_salida, huespedes, notas } = req.body;
 
-    if (new Date(fecha_entrada) < new Date(new Date().toDateString())) {
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (fecha_entrada < hoy) {
       return error(res, "La fecha de entrada no puede ser anterior a hoy", 400);
     }
-    if (new Date(fecha_salida) <= new Date(fecha_entrada)) {
+    if (fecha_salida <= fecha_entrada) {
       return error(res, "La fecha de salida debe ser posterior a la de entrada", 400);
     }
 
-    const habCheck = await executeQuery("SELECT id, precio_noche, capacidad_max FROM Habitacion WHERE id = $1 AND activa = true", [habitacion_id], { role: "public" });
+    // numero y nombre se piden porque el aviso de WhatsApp al hotel los muestra.
+    const habCheck = await executeQuery("SELECT id, numero, nombre, precio_noche, capacidad_max FROM Habitacion WHERE id = $1 AND activa = true", [habitacion_id], { role: "public" });
     if (habCheck.rows.length === 0) {
       return error(res, "Habitación no encontrada o no disponible", 404);
     }
@@ -37,8 +213,7 @@ reservaCtrl.create = async (req, res, next) => {
     let clienteApellido = apellido || "";
 
     if (clienteResult.rows.length === 0) {
-      const tempPassword = require("crypto").randomBytes(6).toString("hex");
-      const bcrypt = require("bcryptjs");
+      const tempPassword = crypto.randomBytes(6).toString("hex");
       const salt = await bcrypt.genSalt(12);
       const hash = await bcrypt.hash(tempPassword, salt);
 
@@ -73,7 +248,7 @@ reservaCtrl.create = async (req, res, next) => {
     await executeQuery(
       `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por, ip_address)
        VALUES ($1, 'Creada', $2, 'cliente', $3)`,
-      [reservaResult.rows[0].id, `Reserva creada por ${clienteNombre} ${clienteApellido}`, req.ip || req.connection.remoteAddress]
+      [reservaResult.rows[0].id, `Reserva creada por ${clienteNombre} ${clienteApellido}`, req.ip || req.socket.remoteAddress]
     );
 
     const reservaNueva = reservaResult.rows[0];
@@ -81,99 +256,6 @@ reservaCtrl.create = async (req, res, next) => {
     notifyNewReserva(reservaNueva, { nombre, apellido, email, telefono }, habitacion);
 
     return success(res, "Reserva creada exitosamente", reservaNueva, 201);
-  } catch (err) {
-    next(err);
-  }
-};
-
-reservaCtrl.getMisReservas = async (req, res, next) => {
-  try {
-    const result = await executeQuery(
-      `SELECT r.*, h.numero as habitacion_numero, h.nombre as habitacion_nombre, h.tipo
-       FROM Reserva r
-       JOIN Habitacion h ON r.habitacion_id = h.id
-       WHERE r.cliente_id = $1
-       ORDER BY r.fecha_entrada DESC`,
-      [req.userId],
-      { role: req.role, userId: req.userId }
-    );
-
-    return success(res, "Mis reservas", result.rows);
-  } catch (err) {
-    next(err);
-  }
-};
-
-reservaCtrl.getById = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-
-    const result = await executeQuery(
-      `SELECT r.*, h.numero as habitacion_numero, h.nombre as habitacion_nombre, h.tipo,
-              c.nombre as cliente_nombre, c.apellido as cliente_apellido, c.email as cliente_email, c.telefono as cliente_telefono
-       FROM Reserva r
-       JOIN Habitacion h ON r.habitacion_id = h.id
-       JOIN Cliente c ON r.cliente_id = c.id
-       WHERE r.id = $1`,
-      [id],
-      { role: req.role, userId: req.userId }
-    );
-
-    if (result.rows.length === 0) {
-      return error(res, "Reserva no encontrada", 404);
-    }
-
-    const reserva = result.rows[0];
-    if (req.role !== "admin" && reserva.cliente_id !== req.userId) {
-      return error(res, "No tienes permiso para ver esta reserva", 403);
-    }
-
-    return success(res, "Detalle de reserva", reserva);
-  } catch (err) {
-    next(err);
-  }
-};
-
-reservaCtrl.cancel = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { motivo } = req.body;
-
-    const result = await executeQuery(
-      "SELECT id, cliente_id, estado FROM Reserva WHERE id = $1",
-      [id],
-      { role: req.role, userId: req.userId }
-    );
-
-    if (result.rows.length === 0) {
-      return error(res, "Reserva no encontrada", 404);
-    }
-
-    const reserva = result.rows[0];
-
-    if (req.role !== "admin" && reserva.cliente_id !== req.userId) {
-      return error(res, "No tienes permiso para cancelar esta reserva", 403);
-    }
-
-    if (!["Pendiente", "Confirmada"].includes(reserva.estado)) {
-      return error(res, "Solo se pueden cancelar reservas Pendientes o Confirmadas", 400);
-    }
-
-    const updated = await executeQuery(
-      "UPDATE Reserva SET estado = 'Cancelada' WHERE id = $1 RETURNING *",
-      [id],
-      { role: req.role }
-    );
-
-    await executeQuery(
-      `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por, ip_address)
-       VALUES ($1, 'Cancelada', $2, $3, $4)`,
-      [id, motivo || "Cancelación solicitada", req.role === "admin" ? "admin" : "cliente", req.ip || req.connection.remoteAddress]
-    );
-
-    emitReservaActualizada(updated.rows[0]);
-
-    return success(res, "Reserva cancelada", updated.rows[0]);
   } catch (err) {
     next(err);
   }

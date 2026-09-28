@@ -43,7 +43,7 @@ const adminLimiter = rateLimit({
 const userLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 30,
-  keyGenerator: (req) => req.userId ? `user_${req.userId}` : rateLimit.ipKeyGenerator(req),
+  keyGenerator: (req) => req.userId ? `user_${req.userId}` : (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown'),
   message: { status: "0", msg: "Demasiadas solicitudes, esperá un minuto", data: [] },
   standardHeaders: true,
   legacyHeaders: false,

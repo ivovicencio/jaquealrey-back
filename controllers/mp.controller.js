@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const axios = require("axios");
 const { executeQuery } = require("../db");
 const { success, error } = require("../utils/response");
@@ -5,7 +6,7 @@ const { success, error } = require("../utils/response");
 const mpCtrl = {};
 
 const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || null;
-const MP_WEBHOOK_SECRET = process.env.MP_WEBHOOK_SECRET || "jaquealrey_webhook_secret";
+const MP_WEBHOOK_SECRET = process.env.MP_WEBHOOK_SECRET || null;
 const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
 
 mpCtrl.createPreference = async (req, res, next) => {
@@ -84,6 +85,30 @@ mpCtrl.createPreference = async (req, res, next) => {
 
 mpCtrl.webhook = async (req, res) => {
   try {
+    // Sin secreto configurado no se puede validar la firma: se rechaza el
+    // request en lugar de aceptarlo. Aceptar sin verificar permitiria que
+    // cualquiera marque reservas como pagadas.
+    const webhookSecret = process.env.MP_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      console.error("[MP] MP_WEBHOOK_SECRET no configurado, webhook rechazado");
+      return res.status(503).json({ status: "0", msg: "Webhook no configurado", data: [] });
+    }
+
+    const signature = String(req.headers["x-signature"] || "");
+    const expectedSignature = crypto
+      .createHmac("sha256", webhookSecret)
+      .update(JSON.stringify(req.body))
+      .digest("hex");
+
+    const firmaValida =
+      signature.length === expectedSignature.length &&
+      crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature));
+
+    if (!firmaValida) {
+      console.warn("[MP] Firma webhook inválida, ignorando request");
+      return res.status(200).json({ status: "1", msg: "OK" });
+    }
+
     const { type, data } = req.body;
 
     if (type === "payment") {
@@ -111,7 +136,7 @@ mpCtrl.webhook = async (req, res) => {
         await executeQuery(
           `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por, ip_address)
            VALUES ($1, 'Confirmada', 'Pago aprobado via MercadoPago', 'sistema', $2)`,
-          [reservaId, req.ip || req.connection.remoteAddress]
+          [reservaId, req.ip || req.socket.remoteAddress]
         );
 
         console.log(`[MP] Pago aprobado para reserva ${reservaId}`);

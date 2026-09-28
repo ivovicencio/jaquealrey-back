@@ -21,10 +21,8 @@ const updateReservaSchema = [
 
 router.get("/dashboard", ...adminGuard, adminCtrl.getDashboard);
 router.get("/reservas", ...adminGuard, adminCtrl.getReservas);
-router.get("/reservas/:id", ...adminGuard, adminCtrl.getReservas);
+router.get("/reservas/:id", ...adminGuard, adminCtrl.getReservaById);
 router.put("/reservas/:id/estado", ...adminGuard, validate(updateReservaSchema), adminCtrl.updateReservaEstado);
-router.get("/clientes", ...adminGuard, adminCtrl.getClientes);
-router.get("/clientes/:id", ...adminGuard, adminCtrl.getClienteById);
 router.get("/historial", ...adminGuard, adminCtrl.getHistorial);
 
 router.post("/habitaciones", ...adminGuard, validate(habitacionSchema), habitacionCtrl.create);

@@ -1,4 +1,6 @@
 -- ============================================================
+-- aca se configura las politicas de seguridad a nivel de fila para definir que puede ver el publico, que ve el duenio y que modifica el admin
+
 -- RLS: Hotel Jaque al Rey
 -- Ejecutar después de init.sql
 -- ============================================================

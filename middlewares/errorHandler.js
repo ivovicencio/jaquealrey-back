@@ -1,3 +1,4 @@
+
 const PG_ERROR_CODES = {
   "23505": { status: 409, msg: "El registro ya existe (duplicado)" },
   "23503": { status: 400, msg: "Violación de clave foránea" },
