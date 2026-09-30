@@ -1,13 +1,37 @@
 const { executeQuery, cache } = require("../db");
 const { success, error } = require("../utils/response");
 
+// Columnas que el catalogo publico puede filtrar. Lista explicita a proposito:
+// si manana se agrega una columna interna (costo real, notas del hotel, quien la
+// mantiene) NO sale sola en el endpoint publico. Un SELECT * aca es una bomba de
+// tiempo: filtra la columna nueva sin que nadie se entere.
+const PUBLIC_COLUMNS = [
+  "id",
+  "numero",
+  "nombre",
+  "descripcion",
+  "camas_individuales",
+  "camas_matrimoniales",
+  "capacidad_max",
+  "tipo",
+  "precio_noche",
+  "activa",
+  "created_at",
+];
+
+// Arma la lista de columnas publica, opcionalmente con alias de tabla.
+const publicColumns = (alias) => {
+  const prefix = alias ? `${alias}.` : "";
+  return PUBLIC_COLUMNS.map((col) => `${prefix}${col}`).join(", ");
+};
+
 const habitacionCtrl = {};
 
 habitacionCtrl.getAll = async (req, res, next) => {
   try {
     const { tipo, capacidad_min, precio_max, disponible_desde, disponible_hasta } = req.query;
 
-    let query = "SELECT * FROM Habitacion WHERE activa = true";
+    let query = `SELECT ${publicColumns()} FROM Habitacion WHERE activa = true`;
     const params = [];
     let paramIndex = 1;
 
@@ -50,7 +74,11 @@ habitacionCtrl.getAll = async (req, res, next) => {
 habitacionCtrl.getById = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const result = await executeQuery("SELECT * FROM Habitacion WHERE id = $1 AND activa = true", [id], { role: "public" });
+    const result = await executeQuery(
+      `SELECT ${publicColumns()} FROM Habitacion WHERE id = $1 AND activa = true`,
+      [id],
+      { role: "public" }
+    );
 
     if (result.rows.length === 0) {
       return error(res, "Habitación no encontrada", 404);
@@ -71,7 +99,7 @@ habitacionCtrl.getDisponibles = async (req, res, next) => {
     }
 
     const result = await executeQuery(
-      `SELECT h.* FROM Habitacion h
+      `SELECT ${publicColumns("h")} FROM Habitacion h
        WHERE h.activa = true
          AND h.id = ANY(SELECT habitacion_id FROM habitaciones_disponibles_en_rango($1, $2))
        ORDER BY h.numero`,

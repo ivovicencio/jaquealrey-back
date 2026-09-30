@@ -7,9 +7,11 @@
   "scripts": {
     "dev": "nodemon index.js",
     "start": "node index.js",
-    "db:init": "psql \"$DATABASE_URL\" < db/init.sql",
-    "db:rls": "psql \"$DATABASE_URL\" < db/rls.sql",
-    "db:seed": "psql \"$DATABASE_URL\" < db/seed.sql"
+    "test": "node tests/regresion.js",
+    "db:init": "node db/run.js init.sql",
+    "db:rls": "node db/run.js rls.sql",
+    "db:security": "node db/run.js security.sql",
+    "db:seed": "node db/run.js seed.sql"
   },
   "keywords": [],
   "author": "",

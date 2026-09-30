@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const reservaCtrl = require("../controllers/reserva.controller");
 const { validate } = require("../middlewares/validator");
-const { reservaLimiter } = require("../middlewares/rateLimiter");
+const { reservaLimiter, reservaEmailLimiter } = require("../middlewares/rateLimiter");
 
 const createReservaSchema = [
   { name: "nombre", type: "string", required: true, minLength: 2 },
@@ -33,6 +33,12 @@ router.get(
 );
 router.put("/cancelar", reservaLimiter, validate(cancelarSchema), reservaCtrl.cancelarPublica);
 
-router.post("/", reservaLimiter, validate(createReservaSchema), reservaCtrl.create);
+// Dos limitadores y no uno, a proposito:
+//   - por IP, para el volumen bruto de una conexion;
+//   - por email, que es lo que de verdad frena la reserva-bomba y no castiga
+//     a los huespedes que comparten la IP del wifi del hotel.
+// El de email va DESPUES del de IP para que el mensaje que ve el huesped sea el
+// del limite de IP, que es el que explica la espera de 15 minutos.
+router.post("/", reservaLimiter, reservaEmailLimiter, validate(createReservaSchema), reservaCtrl.create);
 
 module.exports = router;

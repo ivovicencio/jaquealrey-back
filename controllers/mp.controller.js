@@ -24,7 +24,8 @@ mpCtrl.createPreference = async (req, res, next) => {
        JOIN Habitacion h ON r.habitacion_id = h.id
        JOIN Cliente c ON r.cliente_id = c.id
        WHERE r.id = $1`,
-      [reserva_id]
+      [reserva_id],
+      { role: "admin" }
     );
 
     if (reservaData.rows.length === 0) {
@@ -136,7 +137,8 @@ mpCtrl.webhook = async (req, res) => {
         await executeQuery(
           `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por, ip_address)
            VALUES ($1, 'Confirmada', 'Pago aprobado via MercadoPago', 'sistema', $2)`,
-          [reservaId, req.ip || req.socket.remoteAddress]
+          [reservaId, req.ip || req.socket.remoteAddress],
+          { role: "admin" }
         );
 
         console.log(`[MP] Pago aprobado para reserva ${reservaId}`);

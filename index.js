@@ -83,6 +83,14 @@ app.use(
 
 app.disable("x-powered-by"); //se desactiva la cabecera x-powered-by para que no se sepa que la app esta hecha con express, esto es para proteger la app de ataques dirigidos a express
 
+// Sin esto, detras de un proxy (Vercel, nginx) req.ip es la IP del proxy y no
+// la del visitante. Consecuencia: todos los clientes comparten un mismo
+// contador de rate limit, asi que 200 requests de cualquiera pueden dejar sin
+// servicio a todo el hotel. "1" confía un solo salto, que es lo que corresponde
+// a un proxy delante. No se pone "true" a la ligera: con "true" el cliente
+// mismo elige su IP via X-Forwarded-For y se saltea los limites.
+app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS || 1));
+
 app.use(express.json({ limit: "1mb" })); //aca se configura el limite de tamaño de las solicitudes json, para evitar ataques de denegacion de servicio, si no se configura esto, un atacante podria enviar solicitudes muy grandes y saturar el servidor
 app.use(express.urlencoded({ extended: false, limit: "1mb" })); 
 

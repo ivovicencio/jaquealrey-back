@@ -169,7 +169,8 @@ adminCtrl.updateReservaEstado = async (req, res, next) => {
     await executeQuery(
       `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por, ip_address)
        VALUES ($1, $2, $3, 'admin', $4)`,
-      [id, `Estado cambiado a ${estado}`, notas || null, req.ip || req.socket.remoteAddress]
+      [id, `Estado cambiado a ${estado}`, notas || null, req.ip || req.socket.remoteAddress],
+      { role: "admin" }
     );
 
     emitReservaActualizada(result.rows[0]);

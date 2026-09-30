@@ -16,6 +16,7 @@ services:
       - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
       - ./db/rls.sql:/docker-entrypoint-initdb.d/02-rls.sql
       - ./db/seed.sql:/docker-entrypoint-initdb.d/03-seed.sql
+      - ./db/security.sql:/docker-entrypoint-initdb.d/04-security.sql
     command: >
       postgres
       -c max_connections=200

@@ -221,7 +221,8 @@ reservaCtrl.create = async (req, res, next) => {
         `INSERT INTO Cliente (nombre, apellido, telefono, email, password)
          VALUES ($1, $2, $3, $4, $5)
          RETURNING id, nombre, apellido`,
-        [nombre, apellido || "", telefono, email, hash]
+        [nombre, apellido || "", telefono, email, hash],
+        { role: "admin" }
       );
       clienteId = clienteResult.rows[0].id;
       clienteNombre = clienteResult.rows[0].nombre;
@@ -242,13 +243,15 @@ reservaCtrl.create = async (req, res, next) => {
       `INSERT INTO Reserva (codigo, cliente_id, habitacion_id, fecha_entrada, fecha_salida, huespedes, precio_total, notas, estado)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Pendiente')
        RETURNING *`,
-      [codigo, clienteId, habitacion_id, fecha_entrada, fecha_salida, huespedes, precio_total, notas || null]
+      [codigo, clienteId, habitacion_id, fecha_entrada, fecha_salida, huespedes, precio_total, notas || null],
+      { role: "admin" }
     );
 
     await executeQuery(
       `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por, ip_address)
        VALUES ($1, 'Creada', $2, 'cliente', $3)`,
-      [reservaResult.rows[0].id, `Reserva creada por ${clienteNombre} ${clienteApellido}`, req.ip || req.socket.remoteAddress]
+      [reservaResult.rows[0].id, `Reserva creada por ${clienteNombre} ${clienteApellido}`, req.ip || req.socket.remoteAddress],
+      { role: "admin" }
     );
 
     const reservaNueva = reservaResult.rows[0];
@@ -257,6 +260,15 @@ reservaCtrl.create = async (req, res, next) => {
 
     return success(res, "Reserva creada exitosamente", reservaNueva, 201);
   } catch (err) {
+    // 23P01 = exclusion_violation. El SELECT de disponibilidad de arriba es
+    // solo una cortesia: entre ese chequeo y el INSERT hay una ventana en la
+    // que otra reserva se adelanta. Cuando eso pasa, la constraint
+    // reserva_sin_solapamiento (que es la garantia real) rechaza el INSERT.
+    // Sin esto, al huesped le llegaba un 500 de error del servidor en vez de
+    // un 409 con el mensaje que ya conoce: "la habitacion no esta disponible".
+    if (err && err.code === "23P01") {
+      return error(res, "La habitación no está disponible en las fechas seleccionadas", 409);
+    }
     next(err);
   }
 };

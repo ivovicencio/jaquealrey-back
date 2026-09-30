@@ -2,6 +2,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { executeQuery } = require("../db");
 const { success, error } = require("../utils/response");
+const { registrarFallo, limpiarFallo } = require("../middlewares/rateLimiter");
 
 const authCtrl = {};
 
@@ -40,11 +41,20 @@ authCtrl.register = async (req, res, next) => {
       `INSERT INTO Cliente (nombre, apellido, telefono, email, password)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, nombre, apellido, email, created_at`,
-      [nombre, apellido || "", telefono, email, hash]
+      [nombre, apellido || "", telefono, email, hash],
+      { role: "admin" }
     );
 
     const user = result.rows[0];
     const role = "admin";
+
+    // Se marca antes de firmar: el token que se emite ahora tiene que ser el
+    // primero valido bajo la regla de revocacion.
+    await executeQuery("UPDATE Cliente SET tokens_validos_desde = NOW() WHERE id = $1", [user.id], {
+      role: "admin",
+      userId: user.id,
+    });
+
     const token = jwt.sign({ id: user.id, email: user.email, role }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN,
     });
@@ -65,6 +75,7 @@ authCtrl.login = async (req, res, next) => {
     );
 
     if (result.rows.length === 0) {
+      registrarFallo(req);
       return error(res, "Email o contraseña incorrectos", 401);
     }
 
@@ -72,13 +83,27 @@ authCtrl.login = async (req, res, next) => {
     const valid = await bcrypt.compare(password, user.password);
 
     if (!valid) {
+      registrarFallo(req);
       return error(res, "Email o contraseña incorrectos", 401);
     }
+
+    limpiarFallo(req);
 
     // El rol se decide con el email que viene de la BASE, nunca con el que
     // escribio el visitante, y la comparacion es insensible a mayusculas.
     const role =
       String(user.email).toLowerCase() === String(ADMIN_EMAIL).toLowerCase() ? "admin" : "cliente";
+
+    // Sesion unica: al entrar se mueve la marca y quedan invalidados los tokens
+    // anteriores. Es el trade-off de tener revocacion de verdad — si el personal
+    // se loguea en otro navegador, este pierde la sesion y tiene que entrar de
+    // nuevo. Para un panel con un solo admin es lo razonable.
+    if (role === "admin") {
+      await executeQuery("UPDATE Cliente SET tokens_validos_desde = NOW() WHERE id = $1", [user.id], {
+        role: "admin",
+        userId: user.id,
+      });
+    }
 
     const token = jwt.sign({ id: user.id, email: user.email, role }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN,
@@ -86,6 +111,27 @@ authCtrl.login = async (req, res, next) => {
 
     const { password: _, ...userData } = user;
     return success(res, "Inicio de sesión exitoso", { user: userData, token });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// Logout del lado del servidor. Sin esto, cerrar sesion en la UI era solo
+// borrar el token de este navegador: el tokenseguia sirviendo hasta vencer.
+// Mover la marca invalida el token actual y todos los anteriores.
+authCtrl.logout = async (req, res, next) => {
+  try {
+    // Un segundo por delante del reloj. La revocacion se compara en segundos
+    // enteros, asi que si el login y el logout caen en el mismo segundo la
+    // marca seria igual al iat del token y este seguiria sirviendo. Adelantarla
+    // un segundo cierra ese hueco sin tocar los tokens de otras sesiones.
+    await executeQuery(
+      "UPDATE Cliente SET tokens_validos_desde = NOW() + INTERVAL '1 second' WHERE id = $1",
+      [req.userId],
+      { role: "admin", userId: req.userId }
+    );
+
+    return success(res, "Sesión cerrada");
   } catch (err) {
     next(err);
   }
@@ -129,7 +175,15 @@ authCtrl.changePassword = async (req, res, next) => {
       { role: req.role, userId: req.userId }
     );
 
-    return success(res, "Contraseña actualizada exitosamente");
+    // Cambiar la contraseña corta las demás sesiones abiertas. Si el cambio
+    // viene de que la contraseña se filtró, dejar vivas las sesiones viejas
+    // sería dejarle la puerta abierta a quien la robó.
+    await executeQuery("UPDATE Cliente SET tokens_validos_desde = NOW() WHERE id = $1", [req.userId], {
+      role: req.role,
+      userId: req.userId,
+    });
+
+    return success(res, "Contraseña actualizada exitosamente. Volvé a iniciar sesión.");
   } catch (err) {
     next(err);
   }

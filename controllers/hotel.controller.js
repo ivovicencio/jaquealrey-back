@@ -1,6 +1,11 @@
 const { executeQuery, cache } = require("../db");
 const { success, error } = require("../utils/response");
 
+// GET /api/hotel es publico. Columnas explicitas a proposito, por el mismo motivo
+// que en el catalogo: un SELECT * aca filtraria sola cualquier columna interna
+// que se agregue a Hotel en el futuro (notas internas, cuentas, etc).
+const PUBLIC_COLUMNS = "id, nombre, direccion, telefono, email, descripcion, created_at";
+
 const hotelCtrl = {};
 
 hotelCtrl.getHotel = async (_req, res, next) => {
@@ -10,7 +15,7 @@ hotelCtrl.getHotel = async (_req, res, next) => {
       return success(res, "Información del hotel", JSON.parse(cached));
     }
 
-    const result = await executeQuery("SELECT * FROM Hotel LIMIT 1", []);
+    const result = await executeQuery(`SELECT ${PUBLIC_COLUMNS} FROM Hotel LIMIT 1`, []);
     const hotel = result.rows[0];
 
     if (!hotel) {

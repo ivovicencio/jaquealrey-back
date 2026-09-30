@@ -1,8 +1,7 @@
 const router = require("express").Router();
 const authCtrl = require("../controllers/auth.controller");
-const { verifyAdminToken } = require("../middlewares/auth.middleware");
-const { validate } = require("../middlewares/validator");
-const { loginLimiter, registerLimiter } = require("../middlewares/rateLimiter");
+const { verifyAdminToken } = require("../middlewares/auth.middleware");const { validate } = require("../middlewares/validator");
+const { loginLimiter, registerLimiter, loginLockout } = require("../middlewares/rateLimiter");
 
 const registerSchema = [
   { name: "nombre", type: "string", required: true, minLength: 2 },
@@ -22,7 +21,9 @@ const changePasswordSchema = [
 ];
 
 router.post("/register", registerLimiter, validate(registerSchema), authCtrl.register);
-router.post("/login", loginLimiter, validate(loginSchema), authCtrl.login);
+router.post("/login", loginLockout, loginLimiter, validate(loginSchema), authCtrl.login);
+// Revoca el token en el servidor, no solo en el navegador.
+router.post("/logout", verifyAdminToken, authCtrl.logout);
 // El huesped no tiene cuenta, asi que cambiar contrasena es solo del personal.
 router.put("/password", verifyAdminToken, validate(changePasswordSchema), authCtrl.changePassword);
 
