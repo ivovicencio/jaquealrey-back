@@ -1,0 +1,12 @@
+# Prettier
+# El formato se aplica con `npm run format`. ESLint no maneja estilo: cada
+# archivo formateado por Prettier sigue siendo legible igual.
+printWidth: 100
+tabWidth: 2
+useTabs: false
+semi: true
+singleQuote: false
+trailingComma: "es5"
+bracketSpacing: true
+arrowParens: "always"
+endOfLine: "lf"

@@ -2,10 +2,20 @@
 -- aca se configura las politicas de seguridad a nivel de fila para definir que puede ver el publico, que ve el duenio y que modifica el admin
 
 -- RLS: Hotel Jaque al Rey
--- Ejecutar después de init.sql
+-- Ejecutar despues de init.sql
 -- ============================================================
 
--- 1. Crear roles de aplicación
+-- OJO: los roles app_public y app_admin NO se usan para nada. La app conecta con
+-- jaquealrey_app, que no es miembro de ninguno de los dos, y tiene los privilegios
+-- de tabla directamente. Lo unico que filtra el acceso son las politicas de esta
+-- pagina, que leen current_setting('app.role') y current_setting('app.user_id').
+--
+-- Consecuencia importante: si a una tabla le falta la politica de un comando,
+-- ese comando no da error, simplemente hace match de cero filas. Por ejemplo, si
+-- falta la politica DELETE, un DELETE "exitoso" con rowCount 0 parece un borrado
+-- y en realidad no toco nada. Cada comando usado por la app necesita su politica.
+
+-- 1. Crear roles de aplicacion
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_public') THEN
@@ -36,6 +46,8 @@ CREATE POLICY hotel_insert_admin ON Hotel FOR INSERT
 CREATE POLICY hotel_update_admin ON Hotel FOR UPDATE
     USING (current_setting('app.role', true) = 'admin')
     WITH CHECK (current_setting('app.role', true) = 'admin');
+CREATE POLICY hotel_delete_admin ON Hotel FOR DELETE
+    USING (current_setting('app.role', true) = 'admin');
 
 -- 5. Políticas: Habitación (lectura pública, CRUD admin)
 CREATE POLICY habitacion_select_public ON Habitacion FOR SELECT
@@ -59,8 +71,10 @@ CREATE POLICY cliente_update_self ON Cliente FOR UPDATE
 CREATE POLICY cliente_update_admin ON Cliente FOR UPDATE
     USING (current_setting('app.role', true) = 'admin')
     WITH CHECK (current_setting('app.role', true) = 'admin');
+CREATE POLICY cliente_delete_admin ON Cliente FOR DELETE
+    USING (current_setting('app.role', true) = 'admin');
 
--- 7. Políticas: Reserva
+-- 7. Politicas: Reserva
 CREATE POLICY reserva_insert_public ON Reserva FOR INSERT WITH CHECK (true);
 CREATE POLICY reserva_select_self ON Reserva FOR SELECT
     USING (cliente_id::text = current_setting('app.user_id', true)
@@ -69,7 +83,19 @@ CREATE POLICY reserva_update_admin ON Reserva FOR UPDATE
     USING (current_setting('app.role', true) = 'admin')
     WITH CHECK (current_setting('app.role', true) = 'admin');
 
--- 8. Políticas: HistorialReserva
+-- 8. Politicas: HistorialReserva
 CREATE POLICY historial_select_admin ON HistorialReserva FOR SELECT
     USING (current_setting('app.role', true) = 'admin');
-CREATE POLICY historial_insert ON HistorialReserva FOR INSERT WITH CHECK (true);
+CREATE POLICY historial_insert ON HistorialReserva FOR INSERT
+    WITH CHECK (current_setting('app.role', true) = 'admin');
+
+-- 9. Borrado de reservas: prohibido a proposito
+-- Una reserva no se borra, se cancela cambiando el estado. Borrarla seria
+-- perder el historico y el comprobante de lo que el hotel cobro, y no hay
+-- ningun caso de uso legitimo que lo pida.
+--
+-- Se revoca el privilegio en vez de simplemente no crear la politica, porque
+-- asi un DELETE futuro falla con 42501 permission denied en vez de devolver
+-- rowCount 0 y hacer creer al codigo que borro algo que no borro.
+REVOKE DELETE ON Reserva FROM jaquealrey_app;
+REVOKE DELETE ON HistorialReserva FROM jaquealrey_app;

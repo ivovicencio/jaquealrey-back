@@ -1,5 +1,6 @@
 const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
+const config = require("../config");
 
 let io = null;
 
@@ -8,7 +9,7 @@ function verifySocketToken(raw) {
   const token = raw.replace(/^Bearer\s+/i, "").trim();
   if (!token) return null;
   try {
-    return jwt.verify(token, process.env.JWT_SECRET);
+    return jwt.verify(token, config.auth.jwtSecret);
   } catch {
     return null;
   }
@@ -25,7 +26,9 @@ function resolveUser(socket, payload) {
 function initSocket(server) {
   io = new Server(server, {
     cors: {
-      origin: (process.env.CORS_ORIGIN || "http://localhost:4200").split(",").map((o) => o.trim()),
+      // Misma lista blanca que la de HTTP (app.js). Si divergieran, el socket
+      // aceptaria origenes que la API ya esta rechazando.
+      origin: config.http.allowedOrigins,
       methods: ["GET", "POST"],
     },
   });

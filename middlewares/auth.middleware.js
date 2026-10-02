@@ -1,16 +1,25 @@
-//aca verifica el jwt para saber si el usuario esta autenticado y si tiene permisos de admin
+/**
+ * Autenticacion y autorizacion.
+ *
+ * Dos guards separados a proposito:
+ *   - verifyToken      -> "estas autenticado" (401 si no, 403 si el rol no alcanza)
+ *   - verifyAdmin      -> "y ademas sos admin"
+ *   - verifyAdminToken -> los dos juntos, para no repetir el par en cada ruta
+ *
+ * Que el rol salga del token YA VERIFICADO POR FIRMA es lo que hace segura la
+ * capa: un visitante no puede mandar `role: "admin"` en el body, porque el rol se
+ * reescribe con lo que dice el JWT.
+ */
 
 const jwt = require("jsonwebtoken");
 const { executeQuery } = require("../db");
-
-const JWT_SECRET = process.env.JWT_SECRET;
+const config = require("../config");
 
 //funcion para verificar si el token es correcto definicion la peticion, que respuesta va y que hacer despues
 async function verifyToken(req, res, next) {
   const token =
     req.headers["x-access-token"] ||
-    (req.headers["authorization"] &&
-      req.headers["authorization"].replace("Bearer ", ""));
+    (req.headers["authorization"] && req.headers["authorization"].replace("Bearer ", ""));
 
   // Sin token no hay sesion: es 401, no 403. 403 seria "prohibido con credenciales".
   if (!token) {
@@ -23,7 +32,7 @@ async function verifyToken(req, res, next) {
 
   //si si hay token lo decodifica para ver que todo este correcto y si ta todo ok, continua si no estaria el token expirado
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, config.auth.jwtSecret);
     req.userId = decoded.id;
     req.userEmail = decoded.email;
     req.role = decoded.role || "cliente";
@@ -46,7 +55,7 @@ async function verifyToken(req, res, next) {
       );
 
       if (marcado.rows.length === 0) {
-        return res.status(401).json({ status: "0", msg: "Token inválido o expirado", data: [] });
+        return res.status(401).json({ status: "0", msg: "Token invalido o expirado", data: [] });
       }
 
       const piso = marcado.rows[0].tokens_validos_desde;
@@ -63,7 +72,7 @@ async function verifyToken(req, res, next) {
       } else if (decoded.iat < Math.floor(new Date(piso).getTime() / 1000)) {
         return res.status(401).json({
           status: "0",
-          msg: "Sesión revocada. Volvé a iniciar sesión.",
+          msg: "Sesion revocada. Volve a iniciar sesion.",
           data: [],
         });
       }
@@ -77,7 +86,7 @@ async function verifyToken(req, res, next) {
     if (error.name === "JsonWebTokenError" || error.name === "TokenExpiredError") {
       return res.status(401).json({
         status: "0",
-        msg: "Token inválido o expirado",
+        msg: "Token invalido o expirado",
         data: [],
       });
     }
@@ -85,12 +94,12 @@ async function verifyToken(req, res, next) {
   }
 }
 
-//una vez ya dentro ve si tiene permisos de admin
+// Una vez autenticado, ve si tiene permisos de admin.
 function verifyAdmin(req, res, next) {
   if (req.role !== "admin") {
     return res.status(403).json({
       status: "0",
-      msg: "Acción permitida solo para administradores",
+      msg: "Accion permitida solo para administradores",
       data: [],
     });
   }
@@ -102,5 +111,4 @@ function verifyAdminToken(req, res, next) {
   return verifyToken(req, res, () => verifyAdmin(req, res, next));
 }
 
-//exporta las funciones
 module.exports = { verifyToken, verifyAdmin, verifyAdminToken };

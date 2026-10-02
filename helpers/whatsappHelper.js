@@ -1,11 +1,12 @@
 const axios = require("axios");
+const config = require("../config");
 
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || null;
-const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID || null;
+const WHATSAPP_TOKEN = config.whatsapp.token;
+const WHATSAPP_PHONE_ID = config.whatsapp.phoneId;
 const WHATSAPP_API_URL = `https://graph.facebook.com/v21.0/${WHATSAPP_PHONE_ID}/messages`;
 
-const ADMIN_WHATSAPP = process.env.ADMIN_WHATSAPP || null;
-const HOTEL_PHONE = process.env.HOTEL_PHONE || "02942664320";
+const ADMIN_WHATSAPP = config.whatsapp.adminWhatsapp;
+const HOTEL_PHONE = config.whatsapp.hotelPhone;
 
 function formatPhoneNumber(phone) {
   const cleaned = String(phone || "").replace(/\D/g, "");
@@ -115,6 +116,42 @@ Escribinos al ${HOTEL_PHONE} para que te ofrezcamos una alternativa o el reembol
   await notificarHuesped(reserva, cliente, habitacion, mensaje);
 }
 
+// Aviso al huesped de que su pago quedo confirmado.
+//
+// El flujo del hotel es: el huesped entra al sistema, transfiere al alias y
+// despues el administrador marca el pago como Confirmado. Recien ahi se le
+// avisa, porque antes el pago no esta acreditado: el aviso dice "presentate en
+// recepcion con este codigo", y mandar eso con un pago sin confirmar seria
+// decirle al huesped que tiene la habitacion reservada sin que el hotel haya
+// recibido la plata.
+async function notifyPagoConfirmado(reserva, cliente, habitacion, pago) {
+  const total = Number(reserva.precio_total) || 0;
+  const pagado = Number(pago.saldo_pagado) > 0 ? Number(pago.saldo_pagado) : Number(pago.monto);
+  const resta = Math.max(0, total - pagado);
+  const monto = Number(pago.monto).toLocaleString("es-AR");
+
+  // El metodo casi siempre es alias, pero el admin tambien puede cargar un pago
+  // en efectivo (si el huesped pago en el mostrador) y no hay que anunciar
+  // "transferencia" cuando el dinero entro en efectivo.
+  const como =
+    pago.metodo === "efectivo"
+      ? `Registramos tu pago en efectivo de $${monto}.`
+      : `Registramos tu transferencia de $${monto}.`;
+
+  const mensaje = `✅ *Pago recibido - Jaque al Rey*
+
+Codigo de reserva: *${reserva.codigo}*
+${datosReserva(reserva, habitacion)}
+
+${como}
+${resta > 0 ? `Saldo pendiente: $${resta.toLocaleString("es-AR")}\n` : "Tu reserva queda cubierta.\n"}
+Presentate en recepcion con tu codigo de reserva.
+El ingreso es a partir de las 14:00 hs y la salida antes de las 10:00 hs.
+Cualquier consulta al ${HOTEL_PHONE}.`;
+
+  await notificarHuesped(reserva, cliente, habitacion, mensaje);
+}
+
 // El huesped cancela solo desde la pagina publica: el hotel tiene que enterarse
 // al toque porque la habitacion vuelve a quedar libre para esas fechas.
 async function notifyCancelacionHuesped(reserva, cliente, habitacion, motivo) {
@@ -132,12 +169,88 @@ La habitacion quedo liberada para esas fechas.`;
   await sendTextMessage(ADMIN_WHATSAPP, mensaje);
 }
 
+/**
+ * El huesped aviso que ya transfirio al alias.
+ *
+ * Va al hotel y no al huesped: lo que tiene que hacer el hotel es buscar esa
+ * plata en la cuenta y recien ahi confirmar. Mandarselo al huesped no aporta
+ * nada porque el unico que puede confirmarlo es el hotel.
+ */
+async function notifyPagoReportado(reserva, cliente, habitacion) {
+  if (!ADMIN_WHATSAPP) return;
+
+  const mensaje = `? *El huesped aviso que transfirio - Jaque al Rey*
+Cliente: ${cliente.nombre} ${cliente.apellido || ""}
+Telefono: ${cliente.telefono}
+Email: ${cliente.email}
+${datosReserva(reserva, habitacion)}
+
+El huesped informo que ya hizo la transferencia. La reserva sigue *pendiente*
+hasta que confirmes que la plata llego.`;
+
+  await sendTextMessage(ADMIN_WHATSAPP, mensaje);
+}
+
+/**
+ * La reserva se libero sola por no haberse pagado.
+ *
+ * Al huesped y no solo al hotel: si el cartel no llega, el unico que se entera
+ * de que perdio la habitacion es el hotel, y el huesped descubre que no tiene
+ * reserva cuando ya esta arriba. Ademas el mensaje dice como volver a reservar,
+ * que es la conversion que se pierde al mandar un "se cancelo" seco.
+ */
+async function notifyReservaExpirada(reserva, cliente, habitacion, horas) {
+  if (!ADMIN_WHATSAPP) return;
+
+  const mensaje = `? *Reserva liberada por falta de pago - Jaque al Rey*
+Cliente: ${cliente.nombre} ${cliente.apellido || ""}
+Email: ${cliente.email}
+${datosReserva(reserva, habitacion)}
+
+No se recibio la transferencia dentro de las ${horas} h, asi que la reserva se
+libero y la habitacion quedo disponible para otra persona.`;
+
+  await sendTextMessage(ADMIN_WHATSAPP, mensaje);
+
+  await notificarHuesped(
+    reserva,
+    cliente,
+    habitacion,
+    `Hola ${cliente.nombre}, tu reserva *${reserva.codigo}* quedo liberada porque no recibimos la transferencia dentro de las ${horas} horas. La habitacion vuelve a estar disponible para otra persona.\n\nSi queres volver a reservar, escribinos por aca y te la guardamos al toque.`
+  );
+}
+
+/**
+ * El huesped aviso que transfirio y la reserva sigue pendiente.
+ *
+ * Es el resumen diario que le falta al hotel: no le llega uno por cada reserva
+ * (el aviso original ya llego con `notifyPagoReportado`), sino el recordatorio
+ * de lo que tiene que ir a verificar al banco. Por eso va al admin y no al
+ * huesped.
+ */
+async function notifyPagoReportadoPendiente(reserva, cliente, habitacion) {
+  if (!ADMIN_WHATSAPP) return;
+
+  const mensaje = `? *Pendiente de verificar - Jaque al Rey*
+El huesped aviso que ya transfirio y la reserva sigue *pendiente*.
+Cliente: ${cliente.nombre} ${cliente.apellido || ""}
+Telefono: ${cliente.telefono}
+${datosReserva(reserva, habitacion)}
+
+No se libera sola (dice que pago): cuando veas la plata, confirmala desde el panel.`;
+
+  await sendTextMessage(ADMIN_WHATSAPP, mensaje);
+}
+
 module.exports = {
   sendTextMessage,
   notifyNewReserva,
   notifyReservaConfirmada,
   notifyReservaCanceladaPorHotel,
   notifyCancelacionHuesped,
+  notifyPagoConfirmado,
+  notifyPagoReportado,
+  notifyReservaExpirada,
+  notifyPagoReportadoPendiente,
   HOTEL_PHONE,
 };
-

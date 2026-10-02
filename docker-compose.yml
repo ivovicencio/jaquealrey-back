@@ -13,10 +13,17 @@ services:
       POSTGRES_DB: jaquealrey
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # El orden de las migraciones esta declarado UNA vez, en el array
+      # MIGRACIONES de db/run.js (`npm run db:list` lo muestra). Acui se
+      # replican los numeros porque Docker los ejecuta por orden alfabetico de
+      # nombre de archivo: si se agrega, saca o reordena una migracion, actualiza
+      # los dos lugares. `npm run db:migrate` aplica el mismo orden sin Docker.
       - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
-      - ./db/rls.sql:/docker-entrypoint-initdb.d/02-rls.sql
-      - ./db/seed.sql:/docker-entrypoint-initdb.d/03-seed.sql
-      - ./db/security.sql:/docker-entrypoint-initdb.d/04-security.sql
+      - ./db/rol.sql:/docker-entrypoint-initdb.d/02-rol.sql
+      - ./db/rls.sql:/docker-entrypoint-initdb.d/03-rls.sql
+      - ./db/pagos.sql:/docker-entrypoint-initdb.d/04-pagos.sql
+      - ./db/seed.sql:/docker-entrypoint-initdb.d/05-seed.sql
+      - ./db/security.sql:/docker-entrypoint-initdb.d/06-security.sql
     command: >
       postgres
       -c max_connections=200

@@ -142,8 +142,10 @@ const texto = (c, s) => evaluar(c, s, "document.body ? document.body.innerText :
   const tHome = await texto(c, sessionId);
   check("home carga el nombre del hotel", /jaque/i.test(tHome), `primeras lineas: ${tHome.slice(0, 80)}`);
   check("home muestra el hero / CTA", /reserv/i.test(tHome), "no aparece la palabra reservar");
-  const destacado = await evaluar(c, sessionId, "document.querySelectorAll('.room-card').length");
-  check("home muestra habitaciones destacadas", destacado > 0, `encontre ${destacado} .room-card`);
+  // La home no usa .room-card (esa es la del catalogo de /habitaciones): las
+  // destacadas van en un carrusel, asi que se cuenta el selector de ese componente.
+  const destacado = await evaluar(c, sessionId, "document.querySelectorAll('.depth-carousel__card').length");
+  check("home muestra habitaciones destacadas", destacado > 0, `encontre ${destacado} .depth-carousel__card`);
 
   // ---------------------------------------------------------------
   seccion("2. Catalogo");
@@ -271,19 +273,47 @@ const texto = (c, s) => evaluar(c, s, "document.body ? document.body.innerText :
     return true;
   })()`);
 
-  // Espera a la pantalla de exito.
+  // El hotel cobra por transferencia: despues del formulario va la pantalla
+  // del alias, no la de exito. Ahi el huesped avisa que ya transfirio.
   let exito = false;
   for (let i = 0; i < 40; i += 1) {
     await dormir(400);
-    exito = await evaluar(c, sessionId, "location.pathname.includes('reserva/exito')");
+    exito = await evaluar(c, sessionId, "location.pathname.includes('reserva/pagar')");
     if (exito) break;
   }
   const tExito = await texto(c, sessionId);
   const errorForm = await evaluar(c, sessionId, "document.querySelector('[role=alert]')?.textContent || '(sin error en pantalla)'");
   const where = await evaluar(c, sessionId, "location.pathname + location.search");
-  check("la reserva se crea y lleva a la pantalla de exito", exito, `quedo en ${where} | error en pantalla: ${errorForm}`);
-  const codigo = (tExito.match(/JAR-[0-9A-F]{6}/i) || [])[0];
-  check("muestra un codigo de reserva", !!codigo, `no encontre un codigo JAR- en la pagina`);
+  check("la reserva se crea y lleva a la pantalla de pago", exito, `quedo en ${where} | error en pantalla: ${errorForm}`);
+
+  const aliasTxt = await evaluar(c, sessionId, "document.querySelector('[data-testid=alias]')?.textContent?.trim() || ''");
+  check("el huesped ve el alias para transferir", !!aliasTxt, `no hay [data-testid=alias], estoy en ${where}`);
+  check("el alias no esta en blanco", !!aliasTxt && aliasTxt !== "PENDIENTE-DE-CARGAR", `alias dice "${aliasTxt}"`);
+  const totalTxt = await evaluar(c, sessionId, "document.querySelector('[data-testid=total]')?.textContent?.trim() || ''");
+  check("la pantalla de pago muestra el total", /\$/.test(totalTxt) && !/^0/.test(totalTxt.trim()),
+    `[data-testid=total] dice "${totalTxt}"`);
+
+  const codigo = (tExito.match(/JAR-[0-9A-F]{6}/i) || [])[0] || (where.match(/pagar\/(JAR-[0-9A-F]{6})/i) || [])[1];
+  check("muestra un codigo de reserva", !!codigo, `no encontre un codigo JAR- ni en la pagina ni en la URL`);
+
+  // Apretar "ya transferi" deja el aviso, pero NO confirma la reserva: eso lo
+  // hace el admin cuando ve la plata. Si confirmara aca, cualquiera podria
+  // reservar sin transferir.
+  await evaluar(c, sessionId, `(() => {
+    const b = [...document.querySelectorAll('button')].find(x => /transfer/i.test(x.textContent) && !/confirmado/i.test(x.textContent));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  let aviso = false;
+  for (let i = 0; i < 30; i += 1) {
+    await dormir(300);
+    aviso = await evaluar(c, sessionId, "!!document.querySelector('[data-testid=aviso-ok]')");
+    if (aviso) break;
+  }
+  check("el huesped puede avisar que ya transfirio", aviso, "no aparecio el aviso tras apretar el boton");
+  const textoAviso = await evaluar(c, sessionId, "document.querySelector('[data-testid=aviso-ok]')?.textContent || ''");
+  check("el aviso aclara que la reserva queda pendiente", /pendiente/i.test(textoAviso), `el aviso dice: "${textoAviso.slice(0, 120)}"`);
 
   // ---------------------------------------------------------------
   seccion("6. Sobreventa desde el browser");

@@ -1,4 +1,3 @@
-
 //revis que lo que mande el cliente, tenga el formato correcto, entre lo que es minimo de caracteres, maximo, simbolos, etc.
 function validate(schema, source = "body") {
   return (req, res, next) => {

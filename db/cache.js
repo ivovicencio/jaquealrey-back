@@ -1,18 +1,29 @@
+/**
+ * Cache en Redis.
+ *
+ * Guarda en memoria lo que cambia muy seguido de consultarlo: la info del hotel
+ * y lo que verian los endpoints.
+ *
+ * Es una aceleracion, nunca una dependencia. Si Redis no esta configurado o se
+ * cae, `get` devuelve null y cada metodo sale con exito sin hacer nada: el
+ * sistema responde igual, un poco mas lento. Por eso todos los metodos envuelven
+ * su cuerpo en try/catch y silencian los errores de Redis.
+ */
 
-//se maneja la conexion a redis, sirve para guardar los datos en memoria que casi no cambian para responder mas rapido y no saturar la base de datos
+const Redis = require("ioredis");
+const config = require("../config");
 
-const Redis = require("ioredis"); //traemos redis para la memoria local en cache
-
-const REDIS_URL = process.env.REDIS_URL || null; //vemos donde esta redis
-const CACHE_TTL = parseInt(process.env.CACHE_TTL, 10) || 60; //se configura por cuanto tiempo guardamos las cosas, en este caso, sesenta segundos
+const REDIS_URL = config.cache.url;
+const CACHE_TTL = config.cache.ttl;
 
 let client = null;
 
 if (REDIS_URL) {
   client = new Redis(REDIS_URL, {
-    lazyConnect: true, //aca significa basicamente que no te conectes automaticamente apenas creo el cliente, yo inicio la ocnexion
+    // No conectar al crear el cliente: se conecta explicitamente abajo, asi un
+    // arranque lento de Redis no frena el de la app.
+    lazyConnect: true,
 
-    //esto es por si cae
     retryStrategy(times) {
       if (times > 3) {
         console.warn("[Cache] Redis no disponible, operando sin cache");
@@ -20,6 +31,7 @@ if (REDIS_URL) {
       }
       return Math.min(times * 200, 2000);
     },
+
     maxRetriesPerRequest: 3,
   });
 
@@ -36,7 +48,7 @@ if (REDIS_URL) {
 }
 
 module.exports = {
-  //esto es dame todo lo que redis tenga
+  /** Devuelve lo que Redis tenga para la clave, o null. */
   async get(key) {
     if (!client) return null;
     try {
@@ -46,7 +58,6 @@ module.exports = {
     }
   },
 
-  //guardar en redis
   async set(key, value, ttl = CACHE_TTL) {
     if (!client) return;
     try {
@@ -54,7 +65,7 @@ module.exports = {
     } catch {}
   },
 
-  //para borrar
+  /** Borra las claves que matchean el patron. */
   async del(pattern) {
     if (!client) return;
     try {
@@ -63,7 +74,7 @@ module.exports = {
     } catch {}
   },
 
-  //borra todo
+  /** Vacia la cache entera. Se usa cuando cambia algo que hay que releer. */
   async invalidateAll() {
     if (!client) return;
     try {
@@ -75,7 +86,7 @@ module.exports = {
     return `${prefix}:${id}`;
   },
 
-  //para cuando ya no necesita redis
+  /** Cierra la conexion. Se llama en el shutdown ordenado. */
   async close() {
     if (client) {
       try {

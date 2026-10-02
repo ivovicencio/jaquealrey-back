@@ -13,6 +13,11 @@ const createReservaSchema = [
   { name: "huespedes", type: "number", required: true, min: 1 },
 ];
 
+const reportarPagoSchema = [
+  { name: "codigo", type: "string", required: true, minLength: 4 },
+  { name: "email", type: "email", required: true },
+];
+
 const consultarSchema = [
   { name: "codigo", type: "string", required: true, minLength: 4 },
   { name: "email", type: "email", required: true },
@@ -32,6 +37,18 @@ router.get(
   reservaCtrl.consultar
 );
 router.put("/cancelar", reservaLimiter, validate(cancelarSchema), reservaCtrl.cancelarPublica);
+
+// Aviso de "ya transferi". Mismo criterio que cancelar: codigo + email, sin
+// cuenta. Mismo limitador de IP y de email, porque es la misma clase de trafico
+// (el mismo huesped puede reintentar si le dio timeout) y no tiene sentido que
+// uno este limitado y el otro no.
+router.put(
+  "/reportar-pago",
+  reservaLimiter,
+  reservaEmailLimiter,
+  validate(reportarPagoSchema),
+  reservaCtrl.reportarPago
+);
 
 // Dos limitadores y no uno, a proposito:
 //   - por IP, para el volumen bruto de una conexion;

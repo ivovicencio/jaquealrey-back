@@ -8,10 +8,20 @@
     "dev": "nodemon index.js",
     "start": "node index.js",
     "test": "node tests/regresion.js",
+    "test:expiracion": "node tests/expiracion.test.js",
+    "test:e2e": "node tests/e2e-t1.js",
+    "db:migrate": "node db/run.js",
+    "db:list": "node db/run.js --list",
     "db:init": "node db/run.js init.sql",
+    "db:rol": "node db/run.js rol.sql",
     "db:rls": "node db/run.js rls.sql",
+    "db:pagos": "node db/run.js pagos.sql",
+    "db:seed": "node db/run.js seed.sql",
     "db:security": "node db/run.js security.sql",
-    "db:seed": "node db/run.js seed.sql"
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "keywords": [],
   "author": "",
@@ -31,6 +41,10 @@
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.11.0",
+    "globals": "^17.13.0",
+    "nodemon": "^3.1.14",
+    "prettier": "^3.9.9"
   }
 }

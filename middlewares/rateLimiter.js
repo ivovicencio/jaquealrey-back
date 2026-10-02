@@ -1,35 +1,20 @@
+/**
+ * Rate limiting.
+ *
+ * Los numeros vienen de `config.limites`, donde ya se leyeron y validaron desde
+ * el entorno. Aca no se lee ninguna variable: si hace falta cambiar un limite,
+ * se cambia en config/index.js y en el .env, no en dos lugares.
+ */
+
 const rateLimit = require("express-rate-limit");
 const { ipKeyGenerator } = require("express-rate-limit");
-
-// ------------------------------------------------------------------
-// Todos los limites se=configuran por entorno, con defaults pensados para
-// produccion. Dos razones:
-//   1. Operacion: si un hotel tiene mas trafico del esperado, se ajusta el
-//      numero sin tocar codigo ni volver a desplegar.
-//   2. La suite de regresion gasta ~17 POSTs a /api/reservas. Con el limite
-//      en 20 no podia correr ni una vez por ventana de 15 minutos, y un
-//      "FAIL: 429" se confunde con un sistema roto. Con 60 anda sobrada.
-//
-// Un valor mal escrito NUNCA puede dejar el limitador sin efecto: si el .env
-// dice RESERVA_MAX="" o "muchas" o "-1", caemos al default y avisamos, en vez
-// de pasarle NaN a express-rate-limit.
-// ------------------------------------------------------------------
-function limite(nombre, defecto) {
-  const crudo = process.env[nombre];
-  if (crudo === undefined || crudo === "") return defecto;
-  const n = Number(crudo);
-  if (!Number.isFinite(n) || n < 1) {
-    console.warn(`[Config] ${nombre}="${crudo}" no es un numero valido; uso el default ${defecto}`);
-    return defecto;
-  }
-  return Math.floor(n);
-}
+const config = require("../config");
 
 const MIN = 60 * 1000;
 
 const globalLimiter = rateLimit({
   windowMs: 15 * MIN,
-  max: limite("GLOBAL_MAX", 300),
+  max: config.limites.global,
   message: { status: "0", msg: "Demasiadas solicitudes, intentá de nuevo en 15 minutos", data: [] },
   standardHeaders: true,
   legacyHeaders: false,
@@ -41,8 +26,12 @@ const globalLimiter = rateLimit({
 // solo molestaria a un admin que se equivoca la contrasena.
 const loginLimiter = rateLimit({
   windowMs: 15 * MIN,
-  max: limite("LOGIN_MAX", 10),
-  message: { status: "0", msg: "Demasiados intentos de login, intentá de nuevo en 15 minutos", data: [] },
+  max: config.limites.login,
+  message: {
+    status: "0",
+    msg: "Demasiados intentos de login, intentá de nuevo en 15 minutos",
+    data: [],
+  },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -51,8 +40,12 @@ const loginLimiter = rateLimit({
 // humano y no deelatante: 5 por hora es prudente sin arrivedar.
 const registerLimiter = rateLimit({
   windowMs: 60 * MIN,
-  max: limite("REGISTER_MAX", 5),
-  message: { status: "0", msg: "Demasiados registros desde esta IP, intentá de nuevo en 1 hora", data: [] },
+  max: config.limites.registro,
+  message: {
+    status: "0",
+    msg: "Demasiados registros desde esta IP, intentá de nuevo en 1 hora",
+    data: [],
+  },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -66,7 +59,7 @@ const reservaLimiter = rateLimit({
   // que en realidad no frena nada, porque el que abusa puede rotar de IP
   // trivialmente. El freno real de la ReservationBomb esta mas abajo, en el
   // limite por email.
-  max: limite("RESERVA_MAX", 60),
+  max: config.limites.reserva,
   message: {
     status: "0",
     msg: "Demasiadas reservas desde esta conexion, intentá de nuevo en 15 minutos",
@@ -89,9 +82,11 @@ const reservaLimiter = rateLimit({
 // de un huesped que ya reserve, asi que no entran.
 const reservaEmailLimiter = rateLimit({
   windowMs: 60 * MIN,
-  max: limite("RESERVA_POR_EMAIL_MAX", 5),
+  max: config.limites.reservaPorEmail,
   keyGenerator: (req) => {
-    const email = String((req.body && req.body.email) || "").trim().toLowerCase();
+    const email = String((req.body && req.body.email) || "")
+      .trim()
+      .toLowerCase();
     if (!email) return `reserva_sin_email_${ipKeyGenerator(req.ip || "")}`;
     return `reserva_email_${email}`;
   },
@@ -106,7 +101,7 @@ const reservaEmailLimiter = rateLimit({
 
 const adminLimiter = rateLimit({
   windowMs: 15 * MIN,
-  max: limite("ADMIN_MAX", 60),
+  max: config.limites.admin,
   message: { status: "0", msg: "Demasiadas solicitudes administrativas", data: [] },
   standardHeaders: true,
   legacyHeaders: false,
@@ -114,7 +109,7 @@ const adminLimiter = rateLimit({
 
 const userLimiter = rateLimit({
   windowMs: 1 * MIN,
-  max: limite("USUARIO_MAX", 30),
+  max: config.limites.usuario,
   // req.ip y no x-forwarded-for: esa cabecera la manda el cliente y se cambia
   // en una línea, con lo cual cualquiera se saltea el límite a voluntad.
   // req.ip ya viene resuelta por Express usando trust proxy.

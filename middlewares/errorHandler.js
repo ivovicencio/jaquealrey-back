@@ -1,36 +1,21 @@
+/**
+ * Manejo global de errores.
+ *
+ * Ultimo middleware de la cadena: convierte cualquier error que llega hasta aca
+ * en la respuesta de la API, con el formato comun `{ status: "0", msg, data }`.
+ *
+ * Que sea el ultimo es lo que hace que los errores de los controllers no
+ * terminen como 500 con stack trace: cualquier `throw` de un service que no se
+ * atrapo antes llega aqui.
+ */
 
-const PG_ERROR_CODES = {
-  "23505": { status: 409, msg: "El registro ya existe (duplicado)" },
-  "23503": { status: 400, msg: "Violación de clave foránea" },
-  "22P02": { status: 400, msg: "Tipo de dato inválido" },
-};
+const { traducir } = require("../utils/errores");
 
-function errorHandler(err, req, res, _next) {
-  if (err.code && PG_ERROR_CODES[err.code]) {
-    const pgErr = PG_ERROR_CODES[err.code];
-    return res.status(pgErr.status).json({
-      status: "0",
-      msg: pgErr.msg,
-      data: [],
-    });
-  }
-
-  if (err.status) {
-    return res.status(err.status).json({
-      status: "0",
-      msg: err.message || "Error",
-      data: [],
-    });
-  }
-
-  console.error("[Error]", err);
-
-  const isProduction = process.env.NODE_ENV === "production";
-  return res.status(500).json({
-    status: "0",
-    msg: isProduction ? "Error interno del servidor" : err.message,
-    data: [],
-  });
+// `next` no se usa, pero Express identifica un handler de errores por tener los
+// 4 parametros: si falta, el error se trata como middleware normal y nunca llega.
+function errorHandler(err, req, res, next) {
+  const { status, msg } = traducir(err);
+  return res.status(status).json({ status: "0", msg, data: [] });
 }
 
 module.exports = errorHandler;

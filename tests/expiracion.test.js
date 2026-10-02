@@ -1,0 +1,314 @@
+/**
+ * Prueba de la liberacion automatica.
+ *
+ * Levanta reservas en los cuatro estados que importan y verifica que el job
+ * cancele SOLO las que debe. Todo lo que hace queda en la base, asi que esta
+ * prueba limpia lo que crea.
+ */
+
+const { executeQuery, withTransaction, pool, ROL } = require("../db");
+const {
+  expirarPendientes,
+  avisarPagosReportadosPendientes,
+  detenerJobExpiracion,
+  INTERVALO_RECORDATORIO_HORAS,
+} = require("../services/expiracion.service");
+
+// Conexion del dueno de la base, para las dos cosas que el rol de la app no
+// puede hacer: borrar (la limpieza del final) y viajar en el tiempo (backdatear
+// un aviso para simular que pasaron 6 horas). Mismo bootstrap que tests/regresion.js.
+const { Client } = require("pg");
+const duenho = new Client({
+  host: process.env.PGHOST || "localhost",
+  port: parseInt(process.env.PGPORT || "5432", 10),
+  user: process.env.PGUSER || "jaquealrey",
+  password: process.env.PGPASSWORD || "jaquealrey123",
+  database: process.env.PGDATABASE || "jaquealrey",
+});
+
+let ok = 0;
+let fail = 0;
+const check = (nombre, cond, detalle) => {
+  if (cond) {
+    ok += 1;
+    console.log(`  OK   ${nombre}`);
+  } else {
+    fail += 1;
+    console.log(`  FAIL ${nombre} — ${detalle}`);
+  }
+};
+
+// Rango de numeros de habitacion alto y unico por corrida: la suite puede
+// correr dos veces seguidas sin chocar con el unique de Habitacion.numero.
+// Cada reserva usa el suyo, asi que no se pisan entre ellas.
+// El rango arranca en 20000 porque `numero` es smallint: 32767 es el techo.
+const NUM_HAB_BASE = 20000 + Math.floor(Math.random() * 10000);
+let habCounter = 0;
+const siguienteHab = () => NUM_HAB_BASE + habCounter++;
+
+const ISO = (dias) => new Date(Date.now() + dias * 86400000).toISOString().slice(0, 10);
+
+/** Crea una reserva `Pendiente` con la antiguedad y el aviso que se le pidan. */
+async function crearReserva({ horasVieja, conAvisoPago = false }) {
+  return withTransaction(async (client) => {
+    const hab = await client.query(
+      `INSERT INTO Habitacion (numero, nombre, tipo, capacidad_max, precio_noche, activa)
+       VALUES ($1, 'Test expiracion', 'Doble', 2, 10000, true) RETURNING id`,
+      [siguienteHab()]
+    );
+    const cli = await client.query(
+      `INSERT INTO Cliente (nombre, apellido, email, telefono, password)
+       VALUES ('Test', 'Expiracion', 'exp_${Date.now()}_${Math.random()}@example.com', '1122334455', 'x')
+       RETURNING id`
+    );
+
+    const creada = await client.query(
+      `INSERT INTO Reserva (codigo, cliente_id, habitacion_id, fecha_entrada, fecha_salida, huespedes, precio_total, estado, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, 2, 30000, 'Pendiente', NOW() - ($6 || ' hours')::interval, NOW())
+       RETURNING *`,
+      [
+        `T${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+        cli.rows[0].id,
+        hab.rows[0].id,
+        ISO(30),
+        ISO(33),
+        String(horasVieja),
+      ]
+    );
+
+    if (conAvisoPago) {
+      await client.query(
+        `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por)
+         VALUES ($1, 'PagoReportado', 'El huesped informo que transfirio', 'cliente')`,
+        [creada.rows[0].id]
+      );
+    }
+
+    return creada.rows[0];
+  }, ROL.ADMIN);
+}
+
+async function estadoDe(id) {
+  const r = await executeQuery("SELECT estado FROM Reserva WHERE id = $1", [id], ROL.ADMIN);
+  return r.rows[0]?.estado;
+}
+
+async function accionEnHistorial(id, accion) {
+  const r = await executeQuery(
+    "SELECT COUNT(*)::int AS n FROM HistorialReserva WHERE reserva_id = $1 AND accion = $2",
+    [id, accion],
+    ROL.ADMIN
+  );
+  return r.rows[0].n;
+}
+
+(async () => {
+  console.log("\n=== Liberacion automatica de reservas sin pagar ===");
+  detenerJobExpiracion();
+  await duenho.connect();
+
+  const creada = await crearReserva({ horasVieja: 72 });
+  const nueva = await crearReserva({ horasVieja: 1 });
+  const conAviso = await crearReserva({ horasVieja: 72, conAvisoPago: true });
+
+  // Una confirmada de hace una semana: el job no la tiene que tocar jamas.
+  const confirmada = await withTransaction(async (client) => {
+    const hab = await client.query(
+      `INSERT INTO Habitacion (numero, nombre, tipo, capacidad_max, precio_noche, activa)
+VALUES ($1, 'Test confirmada', 'Doble', 2, 10000, true) RETURNING id`,
+      [siguienteHab()]
+    );
+    const cli = await client.query(
+      `INSERT INTO Cliente (nombre, apellido, email, telefono, password)
+       VALUES ('Test', 'Confirmada', 'conf_${Date.now()}@example.com', '1122334455', 'x')
+       RETURNING id`
+    );
+    const r = await client.query(
+      `INSERT INTO Reserva (codigo, cliente_id, habitacion_id, fecha_entrada, fecha_salida, huespedes, precio_total, estado, created_at)
+       VALUES ($1, $2, $3, $4, $5, 2, 30000, 'Confirmada', NOW() - INTERVAL '7 days')
+       RETURNING *`,
+      [
+        `C${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+        cli.rows[0].id,
+        hab.rows[0].id,
+        ISO(30),
+        ISO(33),
+      ]
+    );
+    return r.rows[0];
+  }, ROL.ADMIN);
+
+  const liberadas = await expirarPendientes();
+  const codigos = liberadas.map((r) => r.codigo);
+
+  check(
+    "libera la reserva vieja sin pago",
+    codigos.includes(creada.codigo),
+    `liberadas: [${codigos.join(", ")}], esperaba ${creada.codigo}`
+  );
+  check(
+    "la deja en Cancelada",
+    (await estadoDe(creada.id)) === "Cancelada",
+    `estado: ${await estadoDe(creada.id)}`
+  );
+  check(
+    "deja rastro en el historial",
+    (await accionEnHistorial(creada.id, "Liberada")) === 1,
+    "no hay accion 'Liberada'"
+  );
+  check(
+    "el aviso dice que fue por falta de pago",
+    (
+      await executeQuery(
+        `SELECT detalle FROM HistorialReserva WHERE reserva_id = $1 AND accion = 'Liberada'`,
+        [creada.id],
+        ROL.ADMIN
+      )
+    ).rows[0].detalle.includes("Sin pago"),
+    "el detalle no menciona la falta de pago"
+  );
+
+  check(
+    "NO toca la reserva nueva",
+    (await estadoDe(nueva.id)) === "Pendiente",
+    `estado: ${await estadoDe(nueva.id)}`
+  );
+  check(
+    "NO toca la que el huesped aviso que pago",
+    (await estadoDe(conAviso.id)) === "Pendiente",
+    `estado: ${await estadoDe(conAviso.id)}`
+  );
+  check(
+    "NO toca una confirmada vieja",
+    (await estadoDe(confirmada.id)) === "Confirmada",
+    `estado: ${await estadoDe(confirmada.id)}`
+  );
+
+  // Idempotencia: correrlo dos veces no libera mas cosas ni duplica historial.
+  const segunda = await expirarPendientes();
+  check(
+    "correrlo de nuevo no hace nada",
+    segunda.length === 0,
+    `libero ${segunda.length} en la segunda pasada`
+  );
+  check(
+    "no duplica el historial",
+    (await accionEnHistorial(creada.id, "Liberada")) === 1,
+    `hay ${await accionEnHistorial(creada.id, "Liberada")} filas 'Liberada'`
+  );
+
+  // El aviso al admin tiene que salir solo una vez por ciclo, no cada 15 min.
+  // El huesped que aprieta "ya transfiri" dos veces deja dos filas en el
+  // historial: el recordatorio igual tiene que ser uno solo.
+  await executeQuery(
+    `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por)
+     VALUES ($1, 'PagoReportado', 'El huesped volvio a informar que transfirio', 'cliente')`,
+    [conAviso.id],
+    ROL.ADMIN
+  );
+
+  const avisos = await avisarPagosReportadosPendientes();
+  check(
+    "avisa al admin de la que quedo pendiente de verificar",
+    avisos.some((r) => r.id === conAviso.id),
+    `avisadas: [${avisos.map((r) => r.codigo).join(", ")}]`
+  );
+  check(
+    "no duplica el aviso aunque el huesped avise dos veces",
+    avisos.filter((r) => r.id === conAviso.id).length === 1,
+    `aparecio ${avisos.filter((r) => r.id === conAviso.id).length} veces`
+  );
+  check(
+    "no avisa de las que ya libero",
+    !avisos.some((r) => r.id === creada.id),
+    "aviso de una reserva ya liberada"
+  );
+
+  // El corte de 6 h: el ciclo siguiente no debe volver a avisar.
+  const avisosInmediatos = await avisarPagosReportadosPendientes();
+  check(
+    "no repite el aviso dentro de la ventana de 6 h",
+    !avisosInmediatos.some((r) => r.id === conAviso.id),
+    `reavanzo: [${avisosInmediatos.map((r) => r.codigo).join(", ")}]`
+  );
+  check(
+    "el aviso deja rastro para poder cortar",
+    (await accionEnHistorial(conAviso.id, "RecordatorioPago")) === 1,
+    `hay ${await accionEnHistorial(conAviso.id, "RecordatorioPago")} filas 'RecordatorioPago'`
+  );
+
+  // Pasada la ventana, vuelve a avisar: si no, el hotel se queda sin enterarse
+  // nunca de una plata que quedo colgada.
+  // El backdate va con `duenho` porque `HistorialReserva` es append-only por
+  // diseño (RLS solo permite INSERT y SELECT), asi que el rol de la app no puede
+  // mover un aviso. En produccion el job tampoco lo necesita: solo inserta.
+  await duenho.query(
+    `UPDATE HistorialReserva
+     SET created_at = NOW() - ($1 || ' hours')::interval
+     WHERE reserva_id = $2 AND accion = 'RecordatorioPago'`,
+    [String(INTERVALO_RECORDATORIO_HORAS + 1), conAviso.id]
+  );
+  const avisosTardios = await avisarPagosReportadosPendientes();
+  check(
+    "vuelve a avisar pasada la ventana",
+    avisosTardios.some((r) => r.id === conAviso.id),
+    `avisadas: [${avisosTardios.map((r) => r.codigo).join(", ")}]`
+  );
+  check(
+    "el huesped que aviso dos veces no genera dos avisos",
+    (await accionEnHistorial(conAviso.id, "RecordatorioPago")) === 2,
+    `hay ${await accionEnHistorial(conAviso.id, "RecordatorioPago")} filas 'RecordatorioPago' para una reserva`
+  );
+
+  // Con 0 horas el job tiene que respectar la desactivacion explicita.
+  const sinFiltrar = await expirarPendientes({ horas: 0 });
+  check(
+    "con horas=0 no se toca nada",
+    sinFiltrar.length === 0,
+    `libero ${sinFiltrar.length} con horas=0`
+  );
+
+  // Limpieza: todo lo que creo esta prueba.
+  //
+  // Va con una conexion propia del dueno de la base (no con `executeQuery`) porque
+  // el rol de la app no tiene permiso de borrado en `pago` a proposito: es la tabla
+  // de confianza del hotel. Es el mismo bootstrap de superusuario que usa
+  // tests/regresion.js.
+  const usados = Array.from({ length: habCounter }, (_, i) => NUM_HAB_BASE + i);
+
+  await duenho.query(
+    "DELETE FROM Pago WHERE reserva_id IN (SELECT id FROM Reserva WHERE habitacion_id IN (SELECT id FROM Habitacion WHERE numero = ANY($1::int[])))",
+    [usados]
+  );
+  await duenho.query(
+    "DELETE FROM HistorialReserva WHERE reserva_id IN (SELECT id FROM Reserva WHERE habitacion_id IN (SELECT id FROM Habitacion WHERE numero = ANY($1::int[])))",
+    [usados]
+  );
+  await duenho.query(
+    "DELETE FROM Reserva WHERE habitacion_id IN (SELECT id FROM Habitacion WHERE numero = ANY($1::int[]))",
+    [usados]
+  );
+  await duenho.query("DELETE FROM Cliente WHERE email LIKE 'exp\\_%' OR email LIKE 'conf\\_%'");
+  await duenho.query("DELETE FROM Habitacion WHERE numero = ANY($1::int[])", [usados]);
+
+  const basura = await executeQuery(
+    "SELECT (SELECT count(*) FROM Habitacion WHERE numero = ANY($1::int[]))::int AS h, (SELECT count(*) FROM Cliente WHERE email LIKE 'exp\\_%' OR email LIKE 'conf\\_%')::int AS c",
+    [usados],
+    ROL.ADMIN
+  );
+  check(
+    "no deja basura",
+    basura.rows[0].h === 0 && basura.rows[0].c === 0,
+    JSON.stringify(basura.rows[0])
+  );
+
+  console.log(`\nOK: ${ok}   FAIL: ${fail}\n`);
+  await duenho.end().catch(() => {});
+  await pool.end().catch(() => {});
+  process.exit(fail === 0 ? 0 : 1);
+})().catch(async (err) => {
+  console.error("FALLO:", err);
+  await duenho.end().catch(() => {});
+  await pool.end().catch(() => {});
+  process.exit(1);
+});
