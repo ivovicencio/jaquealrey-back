@@ -143,6 +143,39 @@ CREATE INDEX idx_historial_fecha ON HistorialReserva(created_at DESC);
 
 -- ============================================================
 -- FUNCIÓN: habitacion_disponible (optimizada con índice GIST)
+--
+-- POR QUÉ ES SECURITY DEFINER -- NO SACARLO
+--
+-- Esta función se llama desde el alta de reservas con ROL.PUBLICO, o sea que
+-- corre como un usuario que no es el dueño de la tabla Reserva. Sin
+-- SECURITY DEFINER el SELECT interno sobre Reserva pasa por las políticas de
+-- RLS, y la única política de SELECT de Reserva (reserva_select_self, en
+-- rls.sql) exige ser el dueño de la reserva o admin. Con ROL.PUBLICO ninguna
+-- de las dos se cumple, RLS devuelve CERO filas, el NOT EXISTS da TRUE siempre
+-- y la función responde "disponible" para absolutamente cualquier habitación.
+--
+-- O sea: sin esto el filtro de disponibilidad es decorativo. El huésped ve la
+-- 7 ocupada en el listado, la elige, llena el formulario entero y recién en el
+-- INSERT se lleva un 409 de la constraint reserva_sin_solapamiento. La
+-- sobreventa no se evitaba, se mudaba de momento.
+--
+-- Con SECURITY DEFINER el SELECT corre como el dueño de la función, y ahí RLS
+-- no filtra. OJO: esto depende de que ese dueño pueda saltarse RLS. Reserva
+-- tiene FORCE ROW LEVEL SECURITY (security.sql), que ata RLS incluso al dueño
+-- de la tabla, así que si el dueño de la función fuera un rol común el fix
+-- seguiría sin hacer nada y nadie vería un error. Por eso las migraciones
+-- tienen que correr con DATABASE_ADMIN_URL (superusuario), nunca con
+-- DATABASE_URL. Para verificarlo:
+--
+--   SELECT p.proname, pg_get_userbyid(p.proowner) AS owner, r.rolsuper, r.rolbypassrls
+--     FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
+--    WHERE p.proname IN ('habitacion_disponible','habitaciones_disponibles_en_rango');
+--
+-- owner tiene que ser un rol con rolsuper = t o rolbypassrls = t.
+--
+-- El SET search_path va fijo por seguridad: sin él, quien pueda crear objetos
+-- en un esquema anterior del path podría interceptar la resolución de nombres
+-- y hacer que la función lea otra tabla.
 -- ============================================================
 CREATE OR REPLACE FUNCTION habitacion_disponible(
     p_habitacion_id INTEGER,
@@ -160,11 +193,24 @@ BEGIN
               daterange(p_fecha_entrada, p_fecha_salida, '[)')
     );
 END;
-$$ LANGUAGE plpgsql STABLE;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public, pg_temp;
 
 -- ============================================================
 -- FUNCIÓN: habitaciones_disponibles_en_rango (optimizada)
 -- Devuelve IDs de habitaciones disponibles en un rango
+--
+-- POR QUÉ ES SECURITY DEFINER -- NO SACARLO
+--
+-- Mismo motivo que habitacion_disponible, y el mismo bug si se le saca: se
+-- llama desde el catálogo y desde "Buscar disponibilidad" con ROL.PUBLICO, y
+-- su NOT EXISTS sobre Reserva sin SECURITY DEFINER devuelve siempre cero
+-- filas, o sea que devuelve TODAS las habitaciones activas como disponibles.
+-- Esta es la función que alimenta el listado que mira el huésped antes de
+-- reservar, así que cuando fallaba el fallo se veía literal: ofreciendo
+-- habitaciones ya ocupadas.
+--
+-- SECURITY DEFINER + search_path fijo: ver la nota larga arriba, en
+-- habitacion_disponible. Es el mismo requisito de owner con BYPASSRLS.
 -- ============================================================
 CREATE OR REPLACE FUNCTION habitaciones_disponibles_en_rango(
     p_fecha_entrada DATE,
@@ -186,7 +232,7 @@ BEGIN
       )
     ORDER BY h.numero;
 END;
-$$ LANGUAGE plpgsql STABLE;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public, pg_temp;
 
 -- ============================================================
 -- FUNCIÓN: buscar_cliente_por_email (bypass RLS con SECURITY DEFINER)

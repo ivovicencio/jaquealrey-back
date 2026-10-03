@@ -34,7 +34,7 @@ const check = (nombre, cond, detalle) => {
     console.log(`  OK   ${nombre}`);
   } else {
     fail += 1;
-    console.log(`  FAIL ${nombre} â ${detalle}`);
+    console.log(`  FAIL ${nombre} — ${detalle}`);
   }
 };
 
@@ -240,7 +240,7 @@ VALUES ($1, 'Test confirmada', 'Doble', 2, 10000, true) RETURNING id`,
   // Pasada la ventana, vuelve a avisar: si no, el hotel se queda sin enterarse
   // nunca de una plata que quedo colgada.
   // El backdate va con `duenho` porque `HistorialReserva` es append-only por
-  // diseÃ±o (RLS solo permite INSERT y SELECT), asi que el rol de la app no puede
+  // diseño (RLS solo permite INSERT y SELECT), asi que el rol de la app no puede
   // mover un aviso. En produccion el job tampoco lo necesita: solo inserta.
   await duenho.query(
     `UPDATE HistorialReserva
@@ -303,3 +303,91 @@ VALUES ($1, 'Test confirmada', 'Doble', 2, 10000, true) RETURNING id`,
   );
 
 
+  // TESTS P02: expiracion y pagos registrados
+  // ---------------------------------------------------------------
+  const reservaConPagoConfirmado = await withTransaction(async (client) => {
+    const cli = await client.query(
+      INSERT INTO Cliente (nombre, apellido, email, telefono, password_hash)
+       VALUES ('Pago', 'Confirmado', 'pc__@example.com', '1122334455', 'x')
+       RETURNING id
+    );
+    const hab = await client.query(
+      INSERT INTO Habitacion (numero, nombre, descripcion, camas_individuales, camas_matrimoniales, capacidad_max, precio_noche, activa)
+       VALUES (, 'Test pago confirmado', 'T', 0, 1, 2, 10000, true)
+       RETURNING id
+    );
+    const creada = await client.query(
+      INSERT INTO Reserva (codigo, cliente_id, habitacion_id, fecha_entrada, fecha_salida, huespedes, precio_total, estado, created_at, updated_at)
+       VALUES (, , , , , 2, 60000, 'Pendiente', NOW() - (50 || ' hours')::interval, NOW())
+       RETURNING *,
+      [
+        P,
+        cli.rows[0].id,
+        hab.rows[0].id,
+        ISO(40),
+        ISO(43),
+      ]
+    );
+    await client.query(
+      INSERT INTO Pago (reserva_id, monto, metodo, estado, referencia, creado_por)
+       VALUES (, , 'alias', 'Confirmado', 'test', 'admin'),
+      [creada.rows[0].id, creada.rows[0].precio_total]
+    );
+    return creada.rows[0];
+  }, ROL.ADMIN);
+
+  const liberadasConPagoConfirmado = await expirarPendientes();
+  check(
+    "Reserva con Pago Confirmado + 48h de antig�edad ? NO se libera",
+    !liberadasConPagoConfirmado.some((r) => r.id === reservaConPagoConfirmado.id),
+    se libero: 
+  );
+
+  const reservaPagoReportadoViejo = await withTransaction(async (client) => {
+    const cli = await client.query(
+      INSERT INTO Cliente (nombre, apellido, email, telefono, password_hash)
+       VALUES ('PagoRep', 'Viejo', 'prv__@example.com', '1122334455', 'x')
+       RETURNING id
+    );
+    const hab = await client.query(
+      INSERT INTO Habitacion (numero, nombre, descripcion, camas_individuales, camas_matrimoniales, capacidad_max, precio_noche, activa)
+       VALUES (, 'Test pago reportado viejo', 'T', 0, 1, 2, 10000, true)
+       RETURNING id
+    );
+    const creada = await client.query(
+      INSERT INTO Reserva (codigo, cliente_id, habitacion_id, fecha_entrada, fecha_salida, huespedes, precio_total, estado, created_at, updated_at)
+       VALUES (, , , , , 2, 60000, 'Pendiente', NOW() - (80 || ' hours')::interval, NOW())
+       RETURNING *,
+      [
+        R,
+        cli.rows[0].id,
+        hab.rows[0].id,
+        ISO(50),
+        ISO(53),
+      ]
+    );
+    await client.query(
+      INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por)
+       VALUES (, 'PagoReportado', 'viejo', 'cliente'),
+      [creada.rows[0].id]
+    );
+    return creada.rows[0];
+  }, ROL.ADMIN);
+
+  const liberadasViejo = await expirarPendientes();
+  check(
+    "Reserva con PagoReportado viejo (> 48h + gracia) ? S� se libera",
+    liberadasViejo.some((r) => r.id === reservaPagoReportadoViejo.id),
+    
+o se libero
+  );
+  console.log(`nOK: ${ok}   FAIL: ${fail}\n`);
+  await duenho.end().catch(() => {});
+  await pool.end().catch(() => {});
+  process.exit(fail === 0 ? 0 : 1);
+})().catch(async (err) => {
+  console.error("FALLO:", err);
+  await duenho.end().catch(() => {});
+  await pool.end().catch(() => {});
+  process.exit(1);
+});

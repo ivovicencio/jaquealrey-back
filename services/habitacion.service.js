@@ -94,6 +94,13 @@ async function listarPublico({
     // Los placeholders siguen la cantidad de params que ya se acumularon: si
     // venia uno, la funcion recibe $2 y $3.
     const base = filtros.params.length;
+    // habitaciones_disponibles_en_rango ya es SECURITY DEFINER (db/init.sql),
+    // asi que su SELECT sobre Reserva ve las reservas que realmente hay y este
+    // filtro sirve de verdad. Por eso NO hay que pasarle ROL.ADMIN: hacerlo
+    // seria leaky por el otro lado, abriria el SELECT de reservas de todo el
+    // mundo solo para poder leer un disponible. Si alguna vez esta llamada
+    // devuelve una habitacion ocupada, el bug es que la funcion perdio el
+    // SECURITY DEFINER, no que falte un ROL.ADMIN aca.
     filtros.query += ` AND id = ANY(SELECT habitacion_id FROM habitaciones_disponibles_en_rango($${base + 1}, $${base + 2}))`;
     filtros.params.push(disponible_desde, disponible_hasta);
   } else if (disponible_desde || disponible_hasta) {
@@ -133,6 +140,10 @@ async function listarDisponibles(desde, hasta) {
   const result = await executeQuery(
     `SELECT ${publicColumns("h")} FROM Habitacion h
      WHERE h.activa = true
+       -- Misma nota que en listarPublico: la función ya es SECURITY DEFINER,
+       -- asi que este ROL.PUBLICO es correcto y no hay que pasarlo ROL.ADMIN.
+       -- El endpoint público no puede filtrar por ROL.ADMIN porque cualquiera
+       -- lo puede pedir.
        AND h.id = ANY(SELECT habitacion_id FROM habitaciones_disponibles_en_rango($1, $2))
      ORDER BY h.numero`,
     [desde, hasta],
