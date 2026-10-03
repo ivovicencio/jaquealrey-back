@@ -273,6 +273,72 @@ function seccion(t) {
   }
 
   // ---------------------------------------------------------------
+  seccion("6b. El filtro de disponibilidad tiene que excluir la ocupada");
+  // ---------------------------------------------------------------
+  // Este es el test del bug de disponibilidad. Antes del fix (funciones sin
+  // SECURITY DEFINER) el SELECT sobre Reserva pasaba por RLS con ROL.PUBLICO,
+  // RLS devolvia cero filas, el NOT EXISTS daba TRUE siempre, y estas tres
+  // checks fallaban: la habitacion 2 estaba ocupada por la reserva de la
+  // seccion 6 y aparecia igual como disponible.
+  //
+  // Reusa la reserva que la seccion 6 ya creo (habitacion 2, del 10 al 12) en
+  // vez de crear otra: la suite esta al limite del reservaLimiter (ver el
+  // preflight de mas arriba) y un POST mas la hacia fallar por rate limit.
+  if (codigo) {
+    const h2 = 2;
+
+    // 1. El endpoint que mira el huesped antes de reservar.
+    const disp = await req(
+      "GET",
+      `/api/habitaciones/disponibles?desde=${dia(10)}&hasta=${dia(12)}`
+    );
+    check("GET /api/habitaciones/disponibles responde 200", disp.status === 200, `status ${disp.status}`);
+    const idsDisponibles = (disp.json?.data || []).map((h) => h.id);
+    check(
+      "la habitacion OCUPADA no aparece en /disponibles",
+      !idsDisponibles.includes(h2),
+      `aparecio la ${h2} en ${JSON.stringify(idsDisponibles)}`
+    );
+
+    // 2. El mismo filtro del catalogo, con disponible_desde/hasta.
+    const catalogo = await req(
+      "GET",
+      `/api/habitaciones?disponible_desde=${dia(10)}&disponible_hasta=${dia(12)}`
+    );
+    check("GET /api/habitaciones con filtros de fecha responde 200", catalogo.status === 200, `status ${catalogo.status}`);
+    const idsCatalogo = (catalogo.json?.data || []).map((h) => h.id);
+    check(
+      "la habitacion OCUPADA no aparece en el catalogo con fechas",
+      !idsCatalogo.includes(h2),
+      `aparecio la ${h2} en ${JSON.stringify(idsCatalogo)}`
+    );
+
+    // 3. La funcion suelta, que es la que llama validarHabitacion en el alta.
+    //    Sin endpoint que la exponga, se pega directo a la base.
+    const fn = await (async () => {
+      require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") });
+      const { executeQuery } = require("../db");
+      return executeQuery("SELECT habitacion_disponible($1, $2, $3) AS d", [h2, dia(10), dia(12)]);
+    })();
+    check(
+      "habitacion_disponible() dice FALSE para la ocupada",
+      fn.rows[0]?.d === false,
+      `devolvio ${JSON.stringify(fn.rows[0]?.d)}`
+    );
+
+    // Y que no se pase de rosca: la misma habitacion tiene que seguir
+    // disponible en fechas en las que no esta ocupada. Si el "fix" fuera
+    // marcar todo como no disponible, estas dos tambien lo detectan.
+    const libre = await req("GET", `/api/habitaciones/disponibles?desde=${dia(30)}&hasta=${dia(32)}`);
+    const idsLibres = (libre.json?.data || []).map((h) => h.id);
+    check(
+      "una habitacion SIN reservas sigue apareciendo como disponible",
+      idsLibres.includes(h2),
+      `no aparecio la ${h2} en ${JSON.stringify(idsLibres)}`
+    );
+  }
+
+  // ---------------------------------------------------------------
   seccion("7. Sobreventa concurrente (10 requests a la vez, misma habitacion)");
   // ---------------------------------------------------------------
   {

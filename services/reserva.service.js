@@ -4,11 +4,22 @@
  * Concentra tres cosas que es importante tener juntas porque se condicionan
  * entre si:
  *
- *  1. Disponibilidad. La garantia real de que una habitacion no se vende dos
- *     veces es la constraint `reserva_sin_solapamiento` de la base, NO el SELECT
- *     de disponibilidad. El SELECT es una cortesia para poder devolver un 409
- *     con un mensaje claro; la constraint es lo que cierra la ventana de carrera
- *     entre ese SELECT y el INSERT.
+ *  1. Disponibilidad. El SELECT de disponibilidad (habitacion_disponible) ES la
+ *     primera linea de defensa contra la sobreventa: decide si la habitacion se
+ *     ofrece, y con el mensaje de 409 que ve el huesped. La garantia final de que
+ *     una habitacion no se venda dos veces sigue siendo la constraint
+ *     `reserva_sin_solapamiento` de la base, porque es lo unico que cierra la
+ *     ventana de carrera entre ese SELECT y el INSERT: dos requests que pasan el
+ *     SELECT al mismo tiempo no se ven entre si, y la constraint los separa.
+ *
+ *     O sea: el SELECT evita la sobreventa en el caso normal (el huesped elige
+ *     una habitacion ocupada y se le dice antes de llenar el formulario), y la
+ *     constraint la evita en el caso patologico (dos clicks a la vez). Si el
+ *     SELECT se rompe, la constraint sigue sosteniendo el negocio, pero el
+ *     huesped llena el formulario entero antes de enterarse. Por eso
+ *     habitacion_disponible es SECURITY DEFINER en db/init.sql: sin eso su
+ *     SELECT sobre Reserva pasa por RLS con ROL.PUBLICO, RLS le devuelve cero
+ *     filas, y la funcion dice "disponible" para todas las habitaciones.
  *
  *  2. Atomicidad. La reserva y su fila de historial se escriben juntas. Si el
  *     historial fallara por separado, quedaria una reserva creada sin ninguna
