@@ -63,10 +63,8 @@ const INTERVALO_RECORDATORIO_HORAS = 6;
  * un IF de JavaScript a proposito: asi la fila nunca se marca como liberada, ni
  * aunque el job se corte a mitad de camino.
  */
-async function expirarPendientes({ horas = HORAS_EXPIRACION } = {}) {
-  // 0 (o menos) desactiva la liberacion, como dice .env.example. Sin esta guarda
-  // el interval de abajo seria 0 horas, o sea "todo Pendiente que exista ahora
-  // mismo", que es justo lo contrario de lo que se pidio al desactivarlo.
+async function expirarPendientes({ horas = HORAS_EXPIRACION, horasGracia = 24 } = {}) {
+  // 0 (o menos) desactiva la liberacion
   if (!horas || horas <= 0) return [];
 
   const resultado = await executeQuery(
@@ -77,24 +75,29 @@ async function expirarPendientes({ horas = HORAS_EXPIRACION } = {}) {
        FROM Reserva res
        WHERE res.estado = 'Pendiente'
          AND res.created_at < NOW() - ($1 || ' hours')::interval
+         -- Tiene pago CONFIRMADO → no tocar
+         AND NOT EXISTS (
+           SELECT 1 FROM Pago p
+           WHERE p.reserva_id = res.id AND p.estado = 'Confirmado'
+         )
+         -- "Ya transferí" da una prórroga acotada, no inmunidad eterna
          AND NOT EXISTS (
            SELECT 1 FROM HistorialReserva h
-           WHERE h.reserva_id = res.id AND h.accion = 'PagoReportado'
+           WHERE h.reserva_id = res.id
+             AND h.accion = 'PagoReportado'
+             AND h.created_at > NOW() - ($2 || ' hours')::interval
          )
        ORDER BY res.created_at ASC
        LIMIT 200
        FOR UPDATE OF res SKIP LOCKED
      )
      RETURNING r.*`,
-    [String(horas)],
+    [String(horas), String(horasGracia)],
     ROL.ADMIN
   );
 
   const liberadas = resultado.rows;
 
-  // El historial va aparte, y solo si se libero algo. Es un registro que el
-  // hotel consulta para reconstruir que paso, asi que si la reserva quedo
-  // cancelada tiene que decir por que.
   for (const reserva of liberadas) {
     await executeQuery(
       `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por, ip_address)
@@ -122,7 +125,6 @@ async function expirarPendientes({ horas = HORAS_EXPIRACION } = {}) {
 
   return liberadas;
 }
-
 /**
  * Avisa al hotel de las reservas que el huesped dijo que transfirio y que hace
  * de que las esta mirando.

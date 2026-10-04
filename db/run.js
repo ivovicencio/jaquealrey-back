@@ -51,6 +51,8 @@ const MIGRACIONES = [
   { archivo: "rls.sql", desc: "politicas RLS y revocaciones" },
   { archivo: "pagos.sql", desc: "tablas Pago y Configuracion" },
   { archivo: "seed.sql", desc: "datos iniciales" },
+  { archivo: "recepcion.sql", desc: "estado En_Casa y disponibilidad" },
+  { archivo: "push_tokens.sql", desc: "tokens para notificaciones push" },
   { archivo: "security.sql", desc: "GRANTs y endurecimiento" },
 ];
 

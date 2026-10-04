@@ -113,6 +113,15 @@ ALTER TABLE Configuracion FORCE ROW LEVEL SECURITY;
 -- de que dos requests lleguen ordenados.
 --
 -- Requiere btree_gist, que init.sql ya instala.
+--
+-- La lista de estados va escrita literal, no con reserva_ocupa_habitacion(). Es
+-- a proposito: un predicado de índice no se recalcula cuando cambia el cuerpo
+-- de la función, así que si alguien agrega un estado a la función y olvida esta
+-- constraint, el sistema entero trata esa reserva como ocupante y la constraint
+-- sigue como estaba, vendiendo la habitacion otra vez. Sin error, sin log.
+-- Duplicada se nota: el INSERT revienta con 23P01.
+--
+-- Si se cambia la lista, hay que volver a correr security.sql y recepcion.sql.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'reserva_sin_solapamiento') THEN
@@ -121,7 +130,7 @@ BEGIN
         habitacion_id WITH =,
         daterange(fecha_entrada, fecha_salida, '[)') WITH &&
       )
-      WHERE (estado IN ('Pendiente', 'Confirmada'));
+      WHERE (estado IN ('Pendiente', 'Confirmada', 'En_Casa'));
   END IF;
 END
 $$;

@@ -69,6 +69,14 @@ function textoONull(nombre) {
   return valor && valor.trim() ? valor.trim() : null;
 }
 
+/** Igual que `opcional`, pero limpia los espacios y nunca devuelve undefined. */
+function texto(nombre, defaultValue) {
+  const valor = process.env[nombre];
+  return valor === undefined || valor === "" || !valor.trim()
+    ? defaultValue
+    : valor.trim();
+}
+
 // ---------------------------------------------------------------------------
 // Validaciones
 // ---------------------------------------------------------------------------
@@ -150,6 +158,12 @@ module.exports = Object.freeze({
   cache: Object.freeze({
     url: textoONull("REDIS_URL"),
     ttl: entero("CACHE_TTL", 60),
+
+    // Namespace de las claves. La cache borra por prefijo y no con FLUSHDB, asi
+    // que este valor tiene que ser el mismo en todas las instancias del mismo
+    // proyecto: si dos-running con valores distintos, cada una invalida claves
+    // que la otra no ve, y la cache queda inconsistente sin que se note.
+    namespace: texto("CACHE_NAMESPACE", "jar"),
   }),
 
   // Auth

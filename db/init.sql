@@ -36,6 +36,10 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 -- ============================================================
 -- Tabla: Hotel (info del hotel, una sola fila)
 -- ============================================================
+-- ============================================================
+-- Hotel Jaque al Rey - Esquema Completo + Tuning
+-- ============================================================
+-- ... (mantener el resto igual hasta la tabla Hotel) ...
 CREATE TABLE Hotel (
     id SERIAL PRIMARY KEY,
     nombre VARCHAR(100) NOT NULL DEFAULT 'Jaque al Rey',
@@ -43,7 +47,8 @@ CREATE TABLE Hotel (
     telefono VARCHAR(20) NOT NULL,
     email VARCHAR(150),
     descripcion TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT hotel_tabla_unica CHECK (id = 1)
 );
 
 -- ============================================================
@@ -60,8 +65,32 @@ CREATE TABLE Habitacion (
     tipo VARCHAR(20) NOT NULL CHECK (tipo IN ('Doble', 'Triple', 'Cuádruple')),
     precio_noche DECIMAL(10, 2) NOT NULL CHECK (precio_noche > 0),
     activa BOOLEAN NOT NULL DEFAULT true,
+    -- Estado operativo, que es distinto de `activa`: `activa = false` es "esta
+    -- habitacion no existe mas para el hotel", `estado_operativo` es "existe pero
+    -- hoy no se puede vender" (la estan limpiando, o se rompio el aire).
+    estado_operativo VARCHAR(20) NOT NULL DEFAULT 'libre'
+        CHECK (estado_operativo IN ('libre', 'ocupada', 'limpieza', 'mantenimiento')),
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- ============================================================
+-- Tabla: HabitacionBloqueo
+-- ============================================================
+-- Sacar una habitacion del mercado un rango de fechas y venderla despues.
+-- `activa = false` no sirve para eso: es permanente.
+CREATE TABLE HabitacionBloqueo (
+    id SERIAL PRIMARY KEY,
+    habitacion_id INTEGER NOT NULL REFERENCES Habitacion(id) ON DELETE CASCADE,
+    desde DATE NOT NULL,
+    hasta DATE NOT NULL,
+    motivo VARCHAR(200) NOT NULL,
+    creado_por VARCHAR(150),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CHECK (hasta > desde)
+);
+
+CREATE INDEX idx_bloqueo_hab ON HabitacionBloqueo(habitacion_id, desde, hasta);
+CREATE INDEX idx_bloqueo_rango ON HabitacionBloqueo(desde, hasta);
 
 -- ============================================================
 -- Tabla: Cliente
@@ -73,6 +102,16 @@ CREATE TABLE Cliente (
     telefono VARCHAR(20) NOT NULL,
     email VARCHAR(150) UNIQUE NOT NULL,
     password VARCHAR(255) NOT NULL,
+    -- Identidad, exigida por el Registro Nacional de Alojamientos. Es NULL en
+    -- los clientes que se crearon por el formulario web: pedir DNI a alguien
+    -- parado en la ruta a las 23:00 cuesta la reserva y no hace falta para
+    -- reservar. Se completa en el check-in.
+    documento VARCHAR(30),
+    nacionalidad VARCHAR(60),
+    fecha_nacimiento DATE,
+    -- Timestamp y no boolean: dice cuándo lo verificó recepción, que es lo que
+    -- sirve para responder por un huésped. NULL = autodeclarado en la web.
+    verificado_en TIMESTAMPTZ,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -89,12 +128,45 @@ CREATE TABLE Reserva (
     huespedes SMALLINT NOT NULL CHECK (huespedes > 0),
     precio_total DECIMAL(10, 2) NOT NULL CHECK (precio_total > 0),
     estado VARCHAR(20) NOT NULL DEFAULT 'Pendiente'
-        CHECK (estado IN ('Pendiente', 'Confirmada', 'Cancelada', 'Completada')),
+        CHECK (estado IN ('Pendiente', 'Confirmada', 'En_Casa', 'Cancelada', 'Completada')),
+    -- De donde salio la reserva. 'recepcion' es un walk-in: el huesped esta
+    -- parado en el mostrador y no publico nada desde la web.
+    origen VARCHAR(20) NOT NULL DEFAULT 'public'
+        CHECK (origen IN ('public', 'recepcion')),
+    -- Los hechos del check-in, que no son lo mismo que el estado. Una reserva
+    -- puede pasar a Completada desde la reserva (cierre administrativo) y ahi
+    -- check_out_at queda en NULL a proposito.
+    check_in_at TIMESTAMPTZ,
+    check_out_at TIMESTAMPTZ,
+    entregado_a VARCHAR(150),
     notas TEXT,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
-    CHECK (fecha_salida > fecha_entrada)
+    CHECK (fecha_salida > fecha_entrada),
+    CHECK (check_out_at IS NULL OR check_in_at IS NOT NULL)
 );
+
+-- ============================================================
+-- Tabla: Consentimiento
+-- ============================================================
+-- Snapshot del texto aceptado, no solo la fecha. Si el documento se reescribe,
+-- hace falta poder probar qué leyo cada huesped.
+--
+-- Va despues de Reserva a proposito: la clave foranea lo necesita.
+CREATE TABLE Consentimiento (
+    id SERIAL PRIMARY KEY,
+    cliente_id INTEGER REFERENCES Cliente(id) ON DELETE SET NULL,
+    reserva_id INTEGER REFERENCES Reserva(id) ON DELETE SET NULL,
+    documento VARCHAR(80) NOT NULL,
+    version VARCHAR(20) NOT NULL,
+    ip_address VARCHAR(45),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    -- Un registro sin cliente ni reserva no prueba nada.
+    CHECK (cliente_id IS NOT NULL OR reserva_id IS NOT NULL)
+);
+
+CREATE INDEX idx_consentimiento_cliente ON Consentimiento(cliente_id, created_at DESC);
+CREATE INDEX idx_consentimiento_reserva ON Consentimiento(reserva_id);
 
 -- ============================================================
 -- Tabla: HistorialReserva (log inmutable)
@@ -108,6 +180,37 @@ CREATE TABLE HistorialReserva (
     ip_address VARCHAR(45),
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- ============================================================
+-- Tabla: HistorialHabitacion (log inmutable)
+-- ============================================================
+-- El gemelo del HistorialReserva, para la habitación. Sin esto, el estado
+-- operativo era un entero sin explicación: nadie podía responder "¿por qué la 12
+-- está en mantenimiento desde el martes?" ni "¿quién cambió el precio a la
+-- mañana?".
+--
+-- OJO: es distinto del HistorialReserva en que `habitacion_id` es nullable con
+-- ON DELETE SET NULL. Con NOT NULL + CASCADE, borrar una habitación se llevaba su
+-- propia bitácora, o sea que se perdía el registro de por qué se dio de baja.
+CREATE TABLE HistorialHabitacion (
+    id SERIAL PRIMARY KEY,
+    habitacion_id INTEGER REFERENCES Habitacion(id) ON DELETE SET NULL,
+    accion VARCHAR(50) NOT NULL,
+    detalle TEXT,
+    -- 'admin' | 'sistema'. Texto y no FK a Usuario a propósito: la bitácora tiene
+    -- que seguir siendo legible aunque el usuario se borre. Y guardar el rol en
+    -- vez del id evita meter PII de empleados en una tabla de auditoría.
+    realizada_por VARCHAR(50) NOT NULL DEFAULT 'admin',
+    ip_address VARCHAR(45),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_historial_hab ON HistorialHabitacion(habitacion_id, created_at DESC);
+-- Índice aparte para los borrados (hist habitacion_id IS NULL): son pocos, pero
+-- la consulta "qué habitaciones se dieron de baja" es la que más se consulta en
+-- una auditoría y sin este índice tiene que recorrer toda la bitácora.
+CREATE INDEX idx_historial_hab_borrada ON HistorialHabitacion(created_at DESC)
+    WHERE habitacion_id IS NULL;
 
 -- ============================================================
 -- ÍNDICES OPTIMIZADOS
@@ -126,11 +229,17 @@ CREATE INDEX idx_reserva_habitacion ON Reserva(habitacion_id);
 CREATE UNIQUE INDEX idx_reserva_codigo ON Reserva(codigo);
 
 -- Índice GIST para solapamiento de fechas (optimiza OVERLAPS)
+--
+-- El predicado tiene que traer EXACTAMENTE los mismos estados que la
+-- constraint EXCLUDE `reserva_sin_solapamiento` de db/security.sql. Si el
+-- índice deja afuera un estado que la constraint incluye, la constraint sigue
+-- siendo correcta (no hay sobreventa) pero cada intento de reserva tiene que
+-- recorrer el GIST entero para verificarla.
 CREATE INDEX idx_reserva_fechas_exclusion
     ON Reserva USING gist (
         habitacion_id,
         daterange(fecha_entrada, fecha_salida, '[)')
-    ) WHERE estado IN ('Pendiente', 'Confirmada');
+    ) WHERE estado IN ('Pendiente', 'Confirmada', 'En_Casa');
 
 -- Índice B-tree complementario para ordenamiento
 CREATE INDEX idx_reserva_fechas ON Reserva(fecha_entrada, fecha_salida);
@@ -140,6 +249,29 @@ CREATE INDEX idx_reserva_fechas_estado ON Reserva(estado, fecha_entrada, fecha_s
 -- HistorialReserva: búsqueda por reserva y fecha
 CREATE INDEX idx_historial_reserva ON HistorialReserva(reserva_id);
 CREATE INDEX idx_historial_fecha ON HistorialReserva(created_at DESC);
+
+-- ============================================================
+-- FUNCIÓN: reserva_ocupa_habitacion (única fuente de verdad)
+--
+-- Todo estado de reserva que ocupa la habitación tiene que estar en esta lista.
+-- El día que aparezca un estado nuevo y no se agregue acá, la habitación vuelve
+-- a estar vendible y se sobrevende.
+--
+-- IMMUTABLE es obligatorio: la usan las funciones de disponibilidad y los
+-- predicados de índice, y Postgres rechaza en un índice cualquier cosa que no
+-- lo sea.
+--
+-- OJO: la constraint EXCLUDE `reserva_sin_solapamiento` (db/security.sql) NO
+-- usa esta función, escribe la lista literal. Un predicado de índice no se
+-- recalcula cuando cambia el cuerpo de una función, así que si alguien agrega
+-- un estado acá y olvida la constraint, la sobreventa vuelve en silencio.
+-- Duplicar la lista ahí es lo seguro: el desajuste se ve como un 23P01.
+-- Ver el comentario largo en db/recepcion.sql, bloque 7.
+-- ============================================================
+CREATE OR REPLACE FUNCTION reserva_ocupa_habitacion(p_estado TEXT)
+RETURNS BOOLEAN AS $$
+    SELECT p_estado IN ('Pendiente', 'Confirmada', 'En_Casa');
+$$ LANGUAGE sql IMMUTABLE;
 
 -- ============================================================
 -- FUNCIÓN: habitacion_disponible (optimizada con índice GIST)
@@ -183,11 +315,32 @@ CREATE OR REPLACE FUNCTION habitacion_disponible(
     p_fecha_salida DATE,
     p_excluir_reserva_id INTEGER DEFAULT NULL
 ) RETURNS BOOLEAN AS $$
+DECLARE
+    v_estado_op TEXT;
 BEGIN
+    SELECT estado_operativo INTO v_estado_op
+    FROM Habitacion
+    WHERE id = p_habitacion_id AND activa = true;
+
+    -- No existe, o esta fuera de servicio: no se puede reservar.
+    IF v_estado_op IS NULL OR v_estado_op = 'mantenimiento' THEN
+        RETURN false;
+    END IF;
+
+    -- Bloqueo manual por rango de fechas.
+    IF EXISTS (
+        SELECT 1 FROM HabitacionBloqueo b
+        WHERE b.habitacion_id = p_habitacion_id
+          AND daterange(b.desde, b.hasta, '[)') &&
+              daterange(p_fecha_entrada, p_fecha_salida, '[)')
+    ) THEN
+        RETURN false;
+    END IF;
+
     RETURN NOT EXISTS (
         SELECT 1 FROM Reserva
         WHERE habitacion_id = p_habitacion_id
-          AND estado IN ('Pendiente', 'Confirmada')
+          AND reserva_ocupa_habitacion(estado)
           AND (p_excluir_reserva_id IS NULL OR id != p_excluir_reserva_id)
           AND daterange(fecha_entrada, fecha_salida, '[)') &&
               daterange(p_fecha_entrada, p_fecha_salida, '[)')
@@ -222,10 +375,22 @@ BEGIN
     SELECT h.id
     FROM Habitacion h
     WHERE h.activa = true
+      -- 'ocupada' se acepta a proposito: una habitacion con un huesped adentro
+      -- tiene que seguir apareciendo como candidata para la NOCHE SIGUIENTE,
+      -- cuando ya se fue. Lo que la saca del mercado es el solapamiento de
+      -- reservas, que se chequea abajo. 'limpieza' y 'mantenimiento' si la
+      -- sacan: una habitacion sin limpiar no es una habitacion libre.
+      AND h.estado_operativo IN ('libre', 'ocupada')
+      AND NOT EXISTS (
+          SELECT 1 FROM HabitacionBloqueo b
+          WHERE b.habitacion_id = h.id
+            AND daterange(b.desde, b.hasta, '[)') &&
+                daterange(p_fecha_entrada, p_fecha_salida, '[)')
+      )
       AND NOT EXISTS (
           SELECT 1 FROM Reserva r
           WHERE r.habitacion_id = h.id
-            AND r.estado IN ('Pendiente', 'Confirmada')
+            AND reserva_ocupa_habitacion(r.estado)
             AND (p_excluir_reserva_id IS NULL OR r.id != p_excluir_reserva_id)
             AND daterange(r.fecha_entrada, r.fecha_salida, '[)') &&
                 daterange(p_fecha_entrada, p_fecha_salida, '[)')

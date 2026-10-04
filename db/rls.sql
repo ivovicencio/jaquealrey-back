@@ -89,7 +89,49 @@ CREATE POLICY historial_select_admin ON HistorialReserva FOR SELECT
 CREATE POLICY historial_insert ON HistorialReserva FOR INSERT
     WITH CHECK (current_setting('app.role', true) = 'admin');
 
--- 9. Borrado de reservas: prohibido a proposito
+-- 9. Politicas: Consentimiento, HabitacionBloqueo, HistorialHabitacion
+-- Estas tres tablas las crea db/init.sql pero sus politicas vivian solo en
+-- db/recepcion.sql. Instalacion nueva = init.sql + rls.sql + security.sql, o
+-- sea que se instalaban SIN RLS: con el GRANT de security.sql el rol de la app
+-- podia leer y escribir las tres libremente. Estas policies cierran ese hueco y
+-- son las mismas que aplica recepcion.sql, para que las dos rutas dejen la base
+-- igual.
+--
+-- Consentimiento: solo lectura para admin. El INSERT lo hace el service con
+-- WITH CHECK (true) porque el consentimiento lo acepta un huesped anonimo: si se
+-- exigiera role=admin, no se podria probar que acepto, que es justo para lo que
+-- existe la tabla.
+ALTER TABLE Consentimiento ENABLE ROW LEVEL SECURITY;
+ALTER TABLE HabitacionBloqueo ENABLE ROW LEVEL SECURITY;
+ALTER TABLE HistorialHabitacion ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS consentimiento_select_admin ON Consentimiento;
+DROP POLICY IF EXISTS consentimiento_insert ON Consentimiento;
+DROP POLICY IF EXISTS bloqueo_select_public ON HabitacionBloqueo;
+DROP POLICY IF EXISTS bloqueo_write_admin ON HabitacionBloqueo;
+DROP POLICY IF EXISTS historial_hab_select_admin ON HistorialHabitacion;
+DROP POLICY IF EXISTS historial_hab_insert_admin ON HistorialHabitacion;
+
+CREATE POLICY consentimiento_select_admin ON Consentimiento FOR SELECT
+    USING (current_setting('app.role', true) = 'admin');
+CREATE POLICY consentimiento_insert ON Consentimiento FOR INSERT
+    WITH CHECK (true);
+
+-- El bloqueo se consulta desde el publico (las fechas disponibles tienen que
+-- tener en cuenta las habitaciones bloqueadas) pero solo un admin lo escribe.
+CREATE POLICY bloqueo_select_public ON HabitacionBloqueo FOR SELECT USING (true);
+CREATE POLICY bloqueo_write_admin ON HabitacionBloqueo
+    FOR ALL
+    USING (current_setting('app.role', true) = 'admin')
+    WITH CHECK (current_setting('app.role', true) = 'admin');
+
+-- Bitacora de habitacion: se consulta y se agrega, nunca se modifica ni borra.
+CREATE POLICY historial_hab_select_admin ON HistorialHabitacion FOR SELECT
+    USING (current_setting('app.role', true) = 'admin');
+CREATE POLICY historial_hab_insert_admin ON HistorialHabitacion FOR INSERT
+    WITH CHECK (current_setting('app.role', true) = 'admin');
+
+-- 10. Borrado de reservas: prohibido a proposito
 -- Una reserva no se borra, se cancela cambiando el estado. Borrarla seria
 -- perder el historico y el comprobante de lo que el hotel cobro, y no hay
 -- ningun caso de uso legitimo que lo pida.
@@ -99,3 +141,8 @@ CREATE POLICY historial_insert ON HistorialReserva FOR INSERT
 -- rowCount 0 y hacer creer al codigo que borro algo que no borro.
 REVOKE DELETE ON Reserva FROM jaquealrey_app;
 REVOKE DELETE ON HistorialReserva FROM jaquealrey_app;
+REVOKE DELETE ON Consentimiento FROM jaquealrey_app;
+
+-- La bitacora de habitacion se puede leer y agregar, pero jamas reescribir ni
+-- borrar: es lo unico que dice por que una habitacion estaba en mantenimiento.
+REVOKE DELETE ON HistorialHabitacion FROM jaquealrey_app;

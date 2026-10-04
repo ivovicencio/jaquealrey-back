@@ -84,15 +84,19 @@ const reservaEmailLimiter = rateLimit({
   windowMs: 60 * MIN,
   max: config.limites.reservaPorEmail,
   keyGenerator: (req) => {
-    const email = String((req.body && req.body.email) || "")
-      .trim()
-      .toLowerCase();
+    // El email no siempre viene en el body: /consultar es un GET y lo manda
+    // por query. Si el keyGenerator solo mirara req.body, en /consultar caeria
+    // siempre al bucket "sin email" y el limite por email no existiria
+    // justamente en la ruta que mas lo necesita.
+    const crudo =
+      (req.body && req.body.email) || (req.query && req.query.email) || "";
+    const email = String(crudo).trim().toLowerCase();
     if (!email) return `reserva_sin_email_${ipKeyGenerator(req.ip || "")}`;
     return `reserva_email_${email}`;
   },
   message: {
     status: "0",
-    msg: "Ya hay demasiadas reservas registradas con ese email",
+    msg: "Ya hay demasiadas consultas con ese email",
     data: [],
   },
   standardHeaders: true,

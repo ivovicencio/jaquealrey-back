@@ -24,9 +24,18 @@ const { notifyPagoConfirmado } = require("../helpers/whatsappHelper");
 const METODOS = ["alias", "efectivo", "otro"];
 const ESTADOS = ["Pendiente", "Confirmado", "Anulado"];
 
-// Tolerancia al comparar montos. Sin esto, un total que llego como 100000.0000001
-// rechaza un pago que en realidad entra justo.
-const EPSILON = 0.001;
+// Tolerancia al comparar montos, en CENTAVOS y no en pesos.
+//
+// El problema del 0.001 original no era la tolerancia sino la unidad: sobre
+// montos de $100.000 el float64 tiene una precisión de ~1,5e-11, así que un
+// epsilon de 0.001 es cinco órdenes de magnitud más grande que el error real.
+// En la práctica el admin podía sobrepagar hasta el 0,1% del total y el
+// sistema lo daba por bien pagado.
+//
+// 0.05 es medio centavo: dos órdenes de magnitud por debajo del error de
+// redondeo de un peso, y a la vez suficientemente holgado para que un pago
+// partido en varias partes no rebote por un redondeo de centavos.
+const EPSILON = 0.05;
 
 // ---------------------------------------------------------------------------
 // Aviso al huesped
@@ -219,11 +228,31 @@ async function crear(datos, ip) {
   let creado;
   try {
     creado = await withTransaction(async (client) => {
+      // En_Casa tambien admite pagos: el saldo se cobra muchas veces en el
+      // momento del check-out, que es cuando el huesped ya esta en la habitacion.
       const reserva = await client.query(
-        "SELECT id, codigo, precio_total::float FROM Reserva WHERE id = $1 FOR UPDATE",
+        `SELECT id, codigo, estado, precio_total::float
+           FROM Reserva
+          WHERE id = $1 AND estado IN ('Pendiente', 'Confirmada', 'En_Casa')
+          FOR UPDATE`,
         [reserva_id]
       );
-      if (reserva.rows.length === 0) throw new AppError("Reserva no encontrada", 404);
+
+      if (reserva.rows.length === 0) {
+        // No puede ser "no existe" y "no admite pagos" a la vez: se distingue
+        // con una segunda consulta para no mandar un 404 donde va un 409.
+        const estadoActual = await client.query(
+          "SELECT estado FROM Reserva WHERE id = $1",
+          [reserva_id]
+        );
+        if (estadoActual.rows.length === 0) {
+          throw new AppError("Reserva no encontrada", 404);
+        }
+        throw new AppError(
+          `La reserva no admite pagos: esta ${estadoActual.rows[0].estado}`,
+          409
+        );
+      }
 
       const pagadoPrevio = await client.query(
         `SELECT COALESCE(SUM(monto), 0)::float AS total
@@ -415,12 +444,16 @@ async function ingresos({ desde } = {}) {
 
   const [facturado, cobrado, totales, saldoPendiente] = await Promise.all([
     // Facturado por mes de estadia.
+    //
+    // 'En_Casa' cuenta: la habitacion ocupada hoy tiene una reserva facturada y
+    // cuyo huesped ya esta adentro. Dejarla afuera hace que el hotel vea
+    // facturado en cero mientras tiene el hotel lleno.
     executeQuery(
       `SELECT to_char(date_trunc('month', fecha_salida), 'YYYY-MM') AS mes,
               COUNT(*)::int AS reservas,
               SUM(precio_total)::float AS total
        FROM Reserva
-       WHERE estado IN ('Confirmada', 'Completada') ${filtro}
+       WHERE estado IN ('Confirmada', 'En_Casa', 'Completada') ${filtro}
        GROUP BY 1
        ORDER BY 1 DESC`,
       params,
@@ -443,22 +476,28 @@ async function ingresos({ desde } = {}) {
     executeQuery(
       `SELECT
          (SELECT COALESCE(SUM(precio_total), 0)::float FROM Reserva
-           WHERE estado IN ('Confirmada','Completada')) AS facturado_total,
-         (SELECT COALESCE(SUM(monto), 0)::float FROM Pago
-           WHERE estado = 'Confirmado') AS cobrado_total,
+           WHERE estado IN ('Confirmada','En_Casa','Completada')) AS facturado_total,
+         -- Cobrado alineado con lo facturado: si el pago cuenta, la reserva que
+         -- lo respalda tiene que estar en la misma lista. Antes summationaba
+         -- cualquier pago Confirmado, incluso de una reserva Cancelada, y el
+         -- resultado era un "a cobrar" negativo que no significaba nada.
+         (SELECT COALESCE(SUM(p.monto), 0)::float
+            FROM Pago p JOIN Reserva r ON r.id = p.reserva_id
+           WHERE p.estado = 'Confirmado'
+             AND r.estado IN ('Confirmada','En_Casa','Completada')) AS cobrado_total,
          (SELECT COALESCE(SUM(monto), 0)::float FROM Pago
            WHERE estado = 'Pendiente') AS pendiente_total`,
       [],
       ROL.ADMIN
     ),
 
-    // Pendiente de cobro: reservas confirmadas donde lo pagado no cubre el total.
+    // Pendiente de cobro: reservas ocupadas donde lo pagado no cubre el total.
     executeQuery(
-      `SELECT r.codigo, r.precio_total::float, r.fecha_entrada, r.fecha_salida,
+      `SELECT r.id, r.codigo, r.precio_total::float, r.fecha_entrada, r.fecha_salida,
               COALESCE(SUM(p.monto) FILTER (WHERE p.estado = 'Confirmado'), 0)::float AS pagado
        FROM Reserva r
        LEFT JOIN Pago p ON p.reserva_id = r.id
-       WHERE r.estado IN ('Confirmada', 'Completada')
+       WHERE r.estado IN ('Confirmada', 'En_Casa', 'Completada')
        GROUP BY r.id
        HAVING COALESCE(SUM(p.monto) FILTER (WHERE p.estado = 'Confirmado'), 0) < r.precio_total
        ORDER BY r.fecha_salida
@@ -473,7 +512,10 @@ async function ingresos({ desde } = {}) {
   return {
     facturado_total: t.facturado_total,
     cobrado_total: t.cobrado_total,
-    a_cobrar_total: Number((t.facturado_total - t.cobrado_total).toFixed(2)),
+    // GREATEST y no un diff a pelo: si por lo que sea se cobro de mas (un pago
+    // que después se anuló), el panel tiene que mostrar 0 y no un saldo
+    // negativo que el hotel/leería como si debiéramos nosotros.
+    a_cobrar_total: Number(Math.max(0, t.facturado_total - t.cobrado_total).toFixed(2)),
     pendiente_confirmar: t.pendiente_total,
     por_mes_facturado: facturado.rows,
     por_mes_cobrado: cobrado.rows,

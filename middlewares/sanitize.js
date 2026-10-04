@@ -43,13 +43,6 @@ function sanitizeObject(obj) {
 
 function sanitize(req, _res, next) {
   if (req.body) req.body = sanitizeObject(req.body);
-  if (req.query) {
-    const cleaned = {};
-    for (const [key, value] of Object.entries(req.query)) {
-      cleaned[key] = CAMPOS_LITERALES.has(key) ? value : sanitizeInput(value);
-    }
-    req.query = cleaned;
-  }
   if (req.params) {
     const cleaned = {};
     for (const [key, value] of Object.entries(req.params)) {

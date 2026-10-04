@@ -72,7 +72,7 @@ async function obtener(desde, hasta) {
            SELECT reserva_id, SUM(monto) AS pagado
            FROM Pago WHERE estado = 'Confirmado' GROUP BY reserva_id
        ) p ON p.reserva_id = r.id
-       WHERE r.estado IN ('Pendiente', 'Confirmada')
+       WHERE reserva_ocupa_habitacion(r.estado)
          AND r.fecha_salida > $1
          AND r.fecha_entrada < $2
        ORDER BY r.fecha_entrada`,
