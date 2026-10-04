@@ -10,15 +10,20 @@ const { executeQuery, ROL } = require("../db");
 async function obtener() {
   const [reservasActivas, reservasProximas, ingresos, totalClientes, totalHabitaciones] =
     await Promise.all([
+      // reserva_ocupa_habitacion() y no la lista literal: este es el conteo de
+      // "reservas que están comprometiendo una habitación", así que tiene que
+      // contar exactamente las mismas que cuentan las funciones de
+      // disponibilidad. Con la lista escrita a mano, el día que se agregue un
+      // estado el dashboard muestra un número y la disponibilidad decide otro.
       executeQuery(
-        "SELECT COUNT(*)::int FROM Reserva WHERE estado IN ('Pendiente', 'Confirmada')",
+        "SELECT COUNT(*)::int FROM Reserva WHERE reserva_ocupa_habitacion(estado)",
         [],
         ROL.ADMIN
       ),
 
       executeQuery(
         `SELECT COUNT(*)::int FROM Reserva
-       WHERE estado IN ('Pendiente', 'Confirmada')
+       WHERE reserva_ocupa_habitacion(estado)
          AND fecha_entrada >= CURRENT_DATE
          AND fecha_entrada <= CURRENT_DATE + INTERVAL '7 days'`,
         [],
@@ -29,10 +34,14 @@ async function obtener() {
       // precio_total por created_at, que mezclaba dos cosas distintas: una reserva
       // creada en marzo para abril contaba como ingreso de marzo, y una reserva
       // confirmada que aun nadie pago contaba como plata recibida.
+      //
+      // 'En_Casa' entra en facturado: la habitacion ocupada hoy tiene una
+      // reserva que se facturó y cuyo huesped ya esta adentro. Si queda afuera,
+      // el hotel ve facturado en cero mientras tiene la habitacion llena.
       executeQuery(
         `SELECT
          (SELECT COALESCE(SUM(precio_total), 0)::float FROM Reserva
-           WHERE estado IN ('Confirmada','Completada')
+           WHERE estado IN ('Confirmada','En_Casa','Completada')
              AND date_trunc('month', fecha_salida) = date_trunc('month', CURRENT_DATE)) AS facturado_mes,
          (SELECT COALESCE(SUM(monto), 0)::float FROM Pago
            WHERE estado = 'Confirmado'

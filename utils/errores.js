@@ -21,6 +21,16 @@ const PG_ERROR_CODES = {
   23505: { status: 409, msg: "El registro ya existe (duplicado)" },
   23503: { status: 400, msg: "Violacion de clave foranea" },
   "22P02": { status: 400, msg: "Tipo de dato invalido" },
+  // Fechas que pasan el validator de formato pero no existen: 2026-02-31 pasa el
+  // regex ^\d{4}-\d{2}-\d{2}$ y las comparaciones de string, y recién Postgres
+  // las rechaza. Sin esta entrada el huésped que tipea el 31 de febrero se
+  // comía un 500 "Error interno del servidor" en una reserva perfectamente
+  // válida. 22001 es el mismo problema con un valor fuera de rango.
+  22007: { status: 400, msg: "Fecha invalida" },
+  22001: { status: 400, msg: "Valor fuera de rango" },
+  // exclusion_violation: la constraint reserva_sin_solapamiento rechazando una
+  // carrera. Es un 409 con mensaje de negocio, no un 500.
+  "23P01": { status: 409, msg: "La habitacion no esta disponible en las fechas seleccionadas" },
 };
 
 /**

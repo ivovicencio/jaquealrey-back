@@ -90,9 +90,40 @@ async function actualizar({ clave, valor }) {
   return result.rows[0];
 }
 
+/**
+ * Porcentaje de anticipo con el que se puede confirmar una reserva.
+ *
+ * Es el mismo número que el huésped ve en la pantalla de pago, así que si
+ * acá no se exige, el sistema le está minta: le muestra "30%" y después
+ * confirma igual una reserva sin un peso. Por eso la regla de confirmar
+ * (reserva.service.js) lee de acá y no de una constante.
+ *
+ * Se lee con el `client` de la transacción en curso y no con `obtener()`: abrir
+ * una segunda conexión mientras se tiene un lock de fila sobre la reserva
+ * traba el pool y, peor, lee el porcentaje fuera de la misma unidad atómica que
+ * la decisión.
+ *
+ * @param {import('pg').PoolClient} client
+ * @returns {Promise<number>} 0..100. 0 si no está configurado.
+ */
+async function leerAnticipoPorcentaje(client) {
+  const result = await client.query(
+    "SELECT valor FROM Configuracion WHERE clave = 'anticipo_porcentaje'"
+  );
+
+  const crudo = result.rows[0]?.valor;
+  if (crudo === undefined || crudo === null || String(crudo).trim() === "") return 0;
+
+  const pct = Number(String(crudo).trim());
+  if (!Number.isFinite(pct) || pct < 0 || pct > 100) return 0;
+
+  return pct;
+}
+
 module.exports = {
   obtener,
   actualizar,
+  leerAnticipoPorcentaje,
   CLAVES_PUBLICAS,
   CLAVES_PORCENTAJE,
   CLAVES_EDITABLES,

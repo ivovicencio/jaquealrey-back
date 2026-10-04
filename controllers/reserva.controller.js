@@ -81,9 +81,45 @@ reservaCtrl.getAll = handle(async (req, res) => {
 });
 
 reservaCtrl.updateEstado = handle(async (req, res) => {
-  const { estado, notas } = req.body;
-  const reserva = await reservaService.cambiarEstado(req.params.id, { estado, notas }, ipDe(req));
+  // `forzar_sin_pago` se pasa entero: si el controller lo filtra, el flag se
+  // pierde en el camino y la reserva queda sin confirmar con un mensaje que no
+  // dice por qué.
+  const { estado, notas, forzar_sin_pago } = req.body;
+  const reserva = await reservaService.cambiarEstado(
+    req.params.id,
+    { estado, notas, forzar_sin_pago },
+    ipDe(req)
+  );
   return success(res, `Reserva ${estado.toLowerCase()}`, reserva);
 });
 
+reservaCtrl.createWalkIn = handle(async (req, res) => {
+  const reserva = await reservaService.crearWalkIn(req.body, ipDe(req));
+  return success(res, "Reserva de recepción creada", reserva, 201);
+});
+
+reservaCtrl.checkIn = handle(async (req, res) => {
+  const reserva = await reservaService.checkIn(req.params.id, req.body, ipDe(req));
+  return success(res, "Check-in registrado", reserva);
+});
+
+reservaCtrl.checkOut = handle(async (req, res) => {
+  const reserva = await reservaService.checkOut(req.params.id, req.body, ipDe(req));
+  return success(res, "Check-out registrado", reserva);
+});
+
+reservaCtrl.noShow = handle(async (req, res) => {
+  const reserva = await reservaService.noShow(req.params.id, ipDe(req));
+  return success(res, "Reserva marcada como no presentación", reserva);
+});
+
+reservaCtrl.getHoy = handle(async (req, res) => {
+  const data = await reservaService.obtenerHoy();
+  return success(res, "Resumen del día", data);
+});
+reservaCtrl.getPorVerificar = handle(async (req, res) => {
+  const horas = parseInt(req.query.horas || '0', 10);
+  const filas = await reservaService.listarPorVerificar({ horasMinimas: horas });
+  return success(res, 'Reservas pendientes de verificar pago', filas);
+});
 module.exports = reservaCtrl;

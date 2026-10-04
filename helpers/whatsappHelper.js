@@ -116,6 +116,28 @@ Escribinos al ${HOTEL_PHONE} para que te ofrezcamos una alternativa o el reembol
   await notificarHuesped(reserva, cliente, habitacion, mensaje);
 }
 
+// Aviso de no presentación.
+//
+// No reutiliza notifyReservaCanceladaPorHotel a propósito. Ese mensaje dice
+// "tu reserva fue cancelada por el hotel, no tenés que pagar nada", y acá el
+// hotel no canceló nada: el huésped no arrived. Mandarle eso sería
+// Informarle una cosa que no pasó, y además abrirle la puerta a "entonces
+// quiero el reembolso" de una reserva que él no honró.
+//
+// El tono es neutro y sin accuse: dice qué pasó y ofrece contacto. accusing al
+// huésped de algo en un mensaje que queda guardado no deja nada bueno.
+async function notifyNoShow(reserva, cliente, habitacion) {
+  const mensaje = `Hola ${cliente.nombre}, te escribimos de Jaque al Rey.
+
+No te registramos el ingreso (check-in) hoy para la reserva ${reserva.codigo}.
+${datosReserva(reserva, habitacion)}
+
+La reserva figura como no presentada. Si creés que fue un error, o si querés
+ reprogramar tu estadía, escribinos al ${HOTEL_PHONE} y lo vemos.`;
+
+  await notificarHuesped(reserva, cliente, habitacion, mensaje);
+}
+
 // Aviso al huesped de que su pago quedo confirmado.
 //
 // El flujo del hotel es: el huesped entra al sistema, transfiere al alias y
@@ -247,6 +269,7 @@ module.exports = {
   notifyNewReserva,
   notifyReservaConfirmada,
   notifyReservaCanceladaPorHotel,
+  notifyNoShow,
   notifyCancelacionHuesped,
   notifyPagoConfirmado,
   notifyPagoReportado,

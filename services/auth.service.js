@@ -15,6 +15,7 @@ const { AppError } = require("../utils/AppError");
 const { registrarFallo, limpiarFallo } = require("../middlewares/rateLimiter");
 const config = require("../config");
 const clienteService = require("./cliente.service");
+const { desconectarCliente } = require("../socket/socket");
 
 const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
 
@@ -45,6 +46,10 @@ async function registrar(body) {
 
   if (!PASSWORD_REGEX.test(password)) {
     throw new AppError(mensajePasswordDebil(), 400);
+  }
+
+  if (password.length > 72) {
+    throw new AppError("La contrasena no puede tener mas de 72 caracteres", 400);
   }
 
   const existente = await clienteService.buscarPorEmail(email);
@@ -80,6 +85,10 @@ async function login(body, req) {
   const user = await clienteService.buscarPorEmail(email, { conPassword: true });
 
   if (!user) {
+    // Hash señuelo: evitamos que el tiempo de respuesta revele si el email existe.
+    //bcrypt.compare es lento (~100-300ms), si no existe el usuario, respondemos
+    //instantáneamente, creando un canal lateral de tiempo.
+    await bcrypt.compare("dummy_password", "$2b$10$FakeHashForTimingConsistency1234567890");
     registrarFallo(req);
     throw new AppError("Email o contrasena incorrectos", 401);
   }
@@ -118,6 +127,13 @@ async function logout(userId) {
     userId,
     adelanteSegundos: 1,
   });
+
+  // La revocacion de la base mata la API, pero no la conexion de socket: sin
+  // esto el admin que acaba de hacer logout sigue en la sala `admins` recibiendo
+  // las reservas de los huespedes en tiempo real. Primero se cierran las
+  // conexiones y despues se revoca, para que ningun mensaje se cuelgue en
+  // transito con un token ya invalidado.
+  desconectarCliente(userId);
 }
 
 async function cambiarPassword({ password_actual, password_nueva }, { userId, role }) {
