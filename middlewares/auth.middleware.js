@@ -32,7 +32,9 @@ async function verifyToken(req, res, next) {
 
   //si si hay token lo decodifica para ver que todo este correcto y si ta todo ok, continua si no estaria el token expirado
   try {
-    const decoded = jwt.verify(token, config.auth.jwtSecret);
+    const decoded = jwt.verify(token, config.auth.jwtSecret, {
+      algorithms: ["HS256"],
+    });
     req.userId = decoded.id;
     req.userEmail = decoded.email;
     req.role = decoded.role || "cliente";

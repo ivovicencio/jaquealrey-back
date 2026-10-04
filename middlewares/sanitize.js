@@ -3,6 +3,7 @@
 // Campos que nunca se tocan: si se "limpian" la contrasena deja de coincidir
 // con el hash y el usuario nunca puede entrar.
 const CAMPOS_LITERALES = new Set(["password", "password_actual", "password_nueva", "admin_secret"]);
+const CLAVES_PELIGROSAS = new Set(["__proto__", "constructor", "prototype"]);
 
 // Se quitan etiquetas HTML y caracteres de control. NO se quitan comillas ni
 // apostrofes: romperian nombres como O'Brien y la parametrizacion no aporta
@@ -28,6 +29,7 @@ function sanitizeObject(obj) {
 
   const sanitized = Array.isArray(obj) ? [] : {};
   for (const [key, value] of Object.entries(obj)) {
+    if (CLAVES_PELIGROSAS.has(key)) continue;
     if (CAMPOS_LITERALES.has(key)) {
       sanitized[key] = value;
     } else if (typeof value === "string") {
@@ -41,14 +43,35 @@ function sanitizeObject(obj) {
   return sanitized;
 }
 
+function sanitizarMapa(mapa) {
+  if (!mapa || typeof mapa !== "object") return;
+  for (const key of Object.keys(mapa)) {
+    if (CLAVES_PELIGROSAS.has(key)) {
+      delete mapa[key];
+      continue;
+    }
+    if (CAMPOS_LITERALES.has(key)) continue;
+    const value = mapa[key];
+    if (typeof value === "string") mapa[key] = sanitizeInput(value);
+    else if (Array.isArray(value)) mapa[key] = value.map((item) => sanitizeInput(item));
+  }
+}
+
 function sanitize(req, _res, next) {
   if (req.body) req.body = sanitizeObject(req.body);
   if (req.params) {
     const cleaned = {};
     for (const [key, value] of Object.entries(req.params)) {
+      if (CLAVES_PELIGROSAS.has(key)) continue;
       cleaned[key] = CAMPOS_LITERALES.has(key) ? value : sanitizeInput(value);
     }
     req.params = cleaned;
+  }
+  // Express 5 a veces deja query de solo lectura: si no se puede reemplazar, se muta.
+  try {
+    if (req.query) sanitizarMapa(req.query);
+  } catch {
+    /* query inmutable */
   }
   next();
 }

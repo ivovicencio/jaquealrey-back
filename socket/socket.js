@@ -71,7 +71,8 @@ function initSocket(server) {
   });
 
   io.use(async (socket, next) => {
-    const raw = socket.handshake.auth?.token || socket.handshake.query?.token;
+    // Solo handshake.auth: el token en query queda en logs, proxies y referers.
+    const raw = socket.handshake.auth?.token;
     const decoded = verifySocketToken(raw);
 
     // Firma invalida: se deja pasar sin usuario. No es un rechazo outright

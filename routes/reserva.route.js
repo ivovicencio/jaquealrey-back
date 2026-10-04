@@ -4,8 +4,8 @@ const { validate } = require("../middlewares/validator");
 const { reservaLimiter, reservaEmailLimiter } = require("../middlewares/rateLimiter");
 
 const createReservaSchema = [
-  { name: "nombre", type: "string", required: true, minLength: 2 },
-  { name: "telefono", type: "string", required: true, minLength: 6 },
+  { name: "nombre", type: "string", required: true, minLength: 2, maxLength: 80 },
+  { name: "telefono", type: "string", required: true, minLength: 6, maxLength: 30 },
   { name: "email", type: "email", required: true },
   { name: "habitacion_id", type: "number", required: true, min: 1 },
   { name: "fecha_entrada", type: "date", required: true },

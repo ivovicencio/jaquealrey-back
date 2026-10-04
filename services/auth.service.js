@@ -25,6 +25,7 @@ function mensajePasswordDebil() {
 
 function firmar(user, role) {
   return jwt.sign({ id: user.id, email: user.email, role }, config.auth.jwtSecret, {
+    algorithm: "HS256",
     expiresIn: config.auth.jwtExpiresIn,
   });
 }

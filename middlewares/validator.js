@@ -52,8 +52,9 @@ function validate(schema, source = "body") {
         if (field.minLength !== undefined && value.length < field.minLength) {
           errors.push(`${field.name}: mínimo ${field.minLength} caracteres`);
         }
-        if (field.maxLength !== undefined && value.length > field.maxLength) {
-          errors.push(`${field.name}: máximo ${field.maxLength} caracteres`);
+        const maxLen = field.maxLength !== undefined ? field.maxLength : 2000;
+        if (value.length > maxLen) {
+          errors.push(`${field.name}: máximo ${maxLen} caracteres`);
         }
         if (field.pattern && !field.pattern.test(value)) {
           errors.push(`${field.name}: formato inválido`);
@@ -62,7 +63,7 @@ function validate(schema, source = "body") {
 
       if (field.type === "email") {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(value)) {
+        if (typeof value !== "string" || value.length > 254 || !emailRegex.test(value)) {
           errors.push(`${field.name}: email inválido`);
         }
       }
