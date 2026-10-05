@@ -14,11 +14,10 @@ const { AppError } = require("../utils/AppError");
 // fila nueva.
 const CLAVES_PUBLICAS = [
   "alias_bancario",
-  "titular_cuenta",
-  "banco_nombre",
   "moneda",
   "anticipo_porcentaje",
 ];
+const CLAVES_ADMIN = ["alias_bancario", "titular_cuenta", "banco_nombre", "moneda"];
 
 // Claves cuyo valor tiene que ser un porcentaje dentro de un rango sano.
 //
@@ -34,7 +33,12 @@ const CLAVES_PORCENTAJE = new Set(["anticipo_porcentaje", "recargo_tarjeta_pct"]
 // asi que sin esta lista cualquiera que llegue al endpoint con token de admin
 // podria crear filas nuevas en Configuracion (una clave inventada queda
 // guardada para siempre y despues la lee el endpoint publico).
-const CLAVES_EDITABLES = new Set([...CLAVES_PUBLICAS, "recargo_tarjeta_pct"]);
+const CLAVES_EDITABLES = new Set([
+  ...CLAVES_PUBLICAS,
+  "titular_cuenta",
+  "banco_nombre",
+  "recargo_tarjeta_pct",
+]);
 
 /** Datos para el pago. Publico. */
 async function obtener() {
@@ -45,6 +49,24 @@ async function obtener() {
      ORDER BY clave`,
     [CLAVES_PUBLICAS],
     ROL.PUBLICO
+  );
+
+  const config = {};
+  for (const fila of result.rows) {
+    config[fila.clave] = fila.valor;
+  }
+  return config;
+}
+
+/** Datos de cobro privados del hotel. Solo para el panel autenticado. */
+async function obtenerAdmin() {
+  const result = await executeQuery(
+    `SELECT clave, valor
+     FROM Configuracion
+     WHERE clave = ANY($1)
+     ORDER BY clave`,
+    [CLAVES_ADMIN],
+    ROL.ADMIN
   );
 
   const config = {};
@@ -93,10 +115,9 @@ async function actualizar({ clave, valor }) {
 /**
  * Porcentaje de anticipo con el que se puede confirmar una reserva.
  *
- * Es el mismo número que el huésped ve en la pantalla de pago, así que si
- * acá no se exige, el sistema le está minta: le muestra "30%" y después
- * confirma igual una reserva sin un peso. Por eso la regla de confirmar
- * (reserva.service.js) lee de acá y no de una constante.
+ * La regla sigue activa internamente, pero el porcentaje no se muestra al
+ * huésped hasta que el hotel confirme su política de cobro. La confirmación
+ * (reserva.service.js) lee el valor configurable de acá y no de una constante.
  *
  * Se lee con el `client` de la transacción en curso y no con `obtener()`: abrir
  * una segunda conexión mientras se tiene un lock de fila sobre la reserva
@@ -122,6 +143,7 @@ async function leerAnticipoPorcentaje(client) {
 
 module.exports = {
   obtener,
+  obtenerAdmin,
   actualizar,
   leerAnticipoPorcentaje,
   CLAVES_PUBLICAS,

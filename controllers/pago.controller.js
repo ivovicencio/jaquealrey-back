@@ -24,6 +24,11 @@ pagoCtrl.getConfiguracionCobro = handle(async (_req, res) => {
 
 // --- Panel del hotel ---
 
+pagoCtrl.getConfiguracionCobroAdmin = handle(async (_req, res) => {
+  const config = await configuracionService.obtenerAdmin();
+  return success(res, "Datos privados de cobro", config);
+});
+
 pagoCtrl.updateConfiguracionCobro = handle(async (req, res) => {
   const actualizada = await configuracionService.actualizar(req.body);
   return success(res, "Configuracion actualizada", actualizada);

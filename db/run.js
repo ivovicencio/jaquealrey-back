@@ -42,11 +42,13 @@ const { Client } = require("pg");
 //   rls       politicas + revocaciones. Necesita las tablas de init y el rol.
 //   pagos     tablas Pago/Configuracion y sus politicas. Necesita el rol.
 //   seed      datos iniciales. Necesita las tablas de init y de pagos.
-//   security  GRANTs finales. Va ULTIMO: otorga permisos sobre TODAS las
-//             tablas, asi que si correria antes, Pago y Configuracion
-//             quedarian sin permiso para la app.
+//   security  GRANTs finales. Va despues de las tablas nuevas para otorgar
+//             permisos tambien sobre ellas.
+//   optimize_indexes quita indices redundantes solo despues de que security.sql
+//             haya creado el indice que respalda la constraint de exclusion.
 const MIGRACIONES = [
   { archivo: "init.sql", desc: "esquema: tablas, indices, restricciones" },
+  { archivo: "alojamientos.sql", desc: "tipos de alojamiento" },
   { archivo: "rol.sql", desc: "rol de aplicacion jaquealrey_app" },
   { archivo: "rls.sql", desc: "politicas RLS y revocaciones" },
   { archivo: "pagos.sql", desc: "tablas Pago y Configuracion" },
@@ -54,6 +56,7 @@ const MIGRACIONES = [
   { archivo: "recepcion.sql", desc: "estado En_Casa y disponibilidad" },
   { archivo: "push_tokens.sql", desc: "tokens para notificaciones push" },
   { archivo: "security.sql", desc: "GRANTs y endurecimiento" },
+  { archivo: "optimize_indexes.sql", desc: "elimina indices redundantes" },
 ];
 
 const connectionString = process.env.DATABASE_ADMIN_URL || process.env.DATABASE_URL;

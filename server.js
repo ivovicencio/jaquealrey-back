@@ -28,8 +28,52 @@ initSocket(server);
 // socket.
 iniciarJobExpiracion();
 
-server.listen(config.port, () => {
-  console.log(`[Server] Hotel Jaque al Rey API corriendo en puerto ${config.port}`);
+async function iniciarServidor() {
+  if (config.isProduction) {
+    const rol = await pool.query(
+      `SELECT rolsuper, rolbypassrls
+       FROM pg_roles
+       WHERE rolname = current_user`
+    );
+
+    if (
+      rol.rows.length !== 1 ||
+      rol.rows[0].rolsuper ||
+      rol.rows[0].rolbypassrls
+    ) {
+      throw new Error("DATABASE_URL debe usar un rol PostgreSQL sin SUPERUSER ni BYPASSRLS");
+    }
+
+    const tablas = await pool.query(
+      `SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public'
+         AND c.relkind = 'r'
+         AND c.relname = ANY($1)`,
+      [["hotel", "habitacion", "cliente", "reserva", "historialreserva", "pago", "configuracion"]]
+    );
+    const tablasInseguras = tablas.rows
+      .filter((tabla) => !tabla.relrowsecurity || !tabla.relforcerowsecurity)
+      .map((tabla) => tabla.relname);
+    if (tablas.rows.length !== 7 || tablasInseguras.length > 0) {
+      throw new Error(
+        `Falta aplicar FORCE ROW LEVEL SECURITY en tablas criticas: ${tablasInseguras.join(", ") || "esquema incompleto"}`
+      );
+    }
+  }
+
+  server.listen(config.port, () => {
+    console.log(`[Server] Hotel Jaque al Rey API corriendo en puerto ${config.port}`);
+  });
+}
+
+iniciarServidor().catch((error) => {
+  console.error(`[FATAL] No se inicia la API: ${error.message}`);
+  detenerJobExpiracion();
+  cache.close().finally(() => {
+    pool.end(() => process.exit(1));
+  });
 });
 
 function gracefulShutdown(signal) {

@@ -289,6 +289,10 @@ const texto = (c, s) => evaluar(c, s, "document.body ? document.body.innerText :
   const aliasTxt = await evaluar(c, sessionId, "document.querySelector('[data-testid=alias]')?.textContent?.trim() || ''");
   check("el huesped ve el alias para transferir", !!aliasTxt, `no hay [data-testid=alias], estoy en ${where}`);
   check("el alias no esta en blanco", !!aliasTxt && aliasTxt !== "PENDIENTE-DE-CARGAR", `alias dice "${aliasTxt}"`);
+  const fechaPagoHoy = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(new Date().getDate()).padStart(2, "0")}`;
+  check("se ingresa el número de operación", await setCampo("pago-numero-operacion", `E2E-${Date.now()}`), "no encontre #pago-numero-operacion");
+  check("se ingresa la referencia de transferencia", await setCampo("pago-referencia", `E2E-${Date.now()}`), "no encontre #pago-referencia");
+  check("se ingresa la fecha de transferencia", await setCampo("pago-fecha-transferencia", fechaPagoHoy), "no encontre #pago-fecha-transferencia");
   const totalTxt = await evaluar(c, sessionId, "document.querySelector('[data-testid=total]')?.textContent?.trim() || ''");
   check("la pantalla de pago muestra el total", /\$/.test(totalTxt) && !/^0/.test(totalTxt.trim()),
     `[data-testid=total] dice "${totalTxt}"`);
@@ -300,7 +304,7 @@ const texto = (c, s) => evaluar(c, s, "document.body ? document.body.innerText :
   // hace el admin cuando ve la plata. Si confirmara aca, cualquiera podria
   // reservar sin transferir.
   await evaluar(c, sessionId, `(() => {
-    const b = [...document.querySelectorAll('button')].find(x => /transfer/i.test(x.textContent) && !/confirmado/i.test(x.textContent));
+    const b = [...document.querySelectorAll('button')].find(x => /ya transferi/i.test(x.textContent));
     if (!b) return false;
     b.click();
     return true;
@@ -432,8 +436,11 @@ const texto = (c, s) => evaluar(c, s, "document.body ? document.body.innerText :
     return true;
   })()`);
 
-  check("el login pide email", await setPorNombre("email", process.env.ADMIN_EMAIL || "admin@jaquealrey.com"), "no hay campo email");
-  check("el login pide password", await setPorNombre("password", process.env.ADMIN_PASS || "!Admin123"), "no hay campo password");
+  if (!process.env.ADMIN_EMAIL || !process.env.ADMIN_PASS) {
+    throw new Error("ADMIN_EMAIL y ADMIN_PASS son obligatorios para ejecutar el flujo E2E del panel.");
+  }
+  check("el login pide email", await setPorNombre("email", process.env.ADMIN_EMAIL), "no hay campo email");
+  check("el login pide password", await setPorNombre("password", process.env.ADMIN_PASS), "no hay campo password");
   await dormir(300);
   await evaluar(c, sessionId, `(() => { const b = [...document.querySelectorAll('button')].find(x => /entrar|iniciar|ingresar|login/i.test(x.textContent)); if (b) b.click(); return true; })()`);
 

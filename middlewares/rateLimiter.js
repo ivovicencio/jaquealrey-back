@@ -78,8 +78,8 @@ const reservaLimiter = rateLimit({
 // que un huesped real reserve una vez, que es lo que pasa, y revienta al que
 // tries llenarlo.
 //
-// Va solo en el POST de crear. Cancelar y consultar usan codigo + email y son
-// de un huesped que ya reserve, asi que no entran.
+// Se comparte entre la creacion y los endpoints publicos de codigo + email para
+// que las consultas distribuidas por IP sigan acumulando en el mismo bucket.
 const reservaEmailLimiter = rateLimit({
   windowMs: 60 * MIN,
   max: config.limites.reservaPorEmail,
@@ -89,7 +89,9 @@ const reservaEmailLimiter = rateLimit({
     // siempre al bucket "sin email" y el limite por email no existiria
     // justamente en la ruta que mas lo necesita.
     const crudo =
-      (req.body && req.body.email) || (req.query && req.query.email) || "";
+      req.method === "GET"
+        ? (req.query && req.query.email) || ""
+        : (req.body && req.body.email) || (req.query && req.query.email) || "";
     const email = String(crudo).trim().toLowerCase();
     if (!email) return `reserva_sin_email_${ipKeyGenerator(req.ip || "")}`;
     return `reserva_email_${email}`;
@@ -106,6 +108,11 @@ const reservaEmailLimiter = rateLimit({
 const adminLimiter = rateLimit({
   windowMs: 15 * MIN,
   max: config.limites.admin,
+  // Los administradores se autentican antes de llegar a este limitador.
+  // Compartir el contador por IP hace que las sesiones del hotel se bloqueen
+  // entre sí y que las pantallas operativas consuman el mismo cupo.
+  keyGenerator: (req) =>
+    req.userId ? `admin_${req.userId}` : ipKeyGenerator(req.ip || ""),
   message: { status: "0", msg: "Demasiadas solicitudes administrativas", data: [] },
   standardHeaders: true,
   legacyHeaders: false,

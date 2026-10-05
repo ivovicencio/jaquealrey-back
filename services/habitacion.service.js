@@ -266,6 +266,7 @@ async function actualizar(id, datos) {
   if (precio_noche !== undefined && precio_noche !== null && Number(precio_noche) !== Number(previa.precio_noche)) {
     cambios.push(`precio ${previa.precio_noche} → ${precio_noche}`);
   }
+
   if (activa !== undefined && activa !== null && Boolean(activa) !== Boolean(previa.activa)) {
     cambios.push(activa ? "reactivada" : "desactivada");
   }

@@ -28,6 +28,7 @@ const SECRETOS_EJEMPLO = [
   "jwt_secret",
   "supersecret",
   "pon_aqui_tu_secreto",
+  "tu_admin_secret_aqui",
 ];
 
 // ---------------------------------------------------------------------------
@@ -88,8 +89,8 @@ const DATABASE_URL = obligatoria("DATABASE_URL");
 const DATABASE_ADMIN_URL = textoONull("DATABASE_ADMIN_URL");
 
 const JWT_SECRET = obligatoria("JWT_SECRET");
-if (JWT_SECRET.length < 32) {
-  fatal("JWT_SECRET debe tener al menos 32 caracteres");
+if (JWT_SECRET.length < (isProduction ? 64 : 32)) {
+  fatal(`JWT_SECRET debe tener al menos ${isProduction ? 64 : 32} caracteres`);
 }
 
 // El chequeo de longitud solo no alcanza. Un secreto de ejemplo largo la pasa sin
@@ -109,7 +110,7 @@ const pareceGenerico = /^(abc|xyz|test|demo|hotel|admin|jaquealrey)[a-z0-9_-]{0,
   jwtSecretMin
 );
 
-if (esEjemplo || pareceGenerico) {
+if (esEjemplo || pareceGenerico || (isProduction && new Set(JWT_SECRET).size < 16)) {
   if (isProduction) {
     fatal(
       "JWT_SECRET es un valor de ejemplo o predecible. Con este secreto cualquiera puede " +
@@ -135,6 +136,51 @@ if (isProduction && allowedOrigins.length === 0) {
 if (isProduction && allowedOrigins.includes("*")) {
   fatal("CORS_ORIGIN no puede ser wildcard en produccion");
 }
+if (isProduction && allowedOrigins.some((origin) => {
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol !== "https:" || parsed.origin !== origin;
+  } catch {
+    return true;
+  }
+})) {
+  fatal("CORS_ORIGIN en produccion debe contener origenes HTTPS exactos, sin rutas ni barras finales");
+}
+
+const ADMIN_SECRET = textoONull("ADMIN_SECRET");
+if (isProduction) {
+  if (!ADMIN_SECRET || ADMIN_SECRET.length < 32) {
+    fatal("ADMIN_SECRET debe estar configurado y tener al menos 32 caracteres en produccion");
+  }
+  const adminSecretMin = ADMIN_SECRET.toLowerCase();
+  if (
+    SECRETOS_EJEMPLO.some((s) => adminSecretMin.includes(s)) ||
+    /^(abc|xyz|test|demo|hotel|admin|jaquealrey)[a-z0-9_-]{0,12}$/.test(adminSecretMin) ||
+    new Set(ADMIN_SECRET).size < 12
+  ) {
+    fatal("ADMIN_SECRET parece un valor de ejemplo o predecible");
+  }
+  if (!process.env.ADMIN_EMAIL || !process.env.ADMIN_EMAIL.trim()) {
+    fatal("ADMIN_EMAIL debe configurarse explicitamente en produccion");
+  }
+  if (DATABASE_ADMIN_URL) {
+    fatal("DATABASE_ADMIN_URL no debe estar configurado en el entorno runtime de produccion");
+  }
+}
+
+const REDIS_URL = textoONull("REDIS_URL");
+if (isProduction && REDIS_URL) {
+  let redisUrl;
+  try {
+    redisUrl = new URL(REDIS_URL);
+  } catch {
+    fatal("REDIS_URL no es una URL valida");
+  }
+  const redisEsInterno = redisUrl.protocol === "redis:" && redisUrl.hostname === "jaquealrey-redis";
+  if ((!redisEsInterno && redisUrl.protocol !== "rediss:") || !redisUrl.password) {
+    fatal("REDIS_URL en produccion debe usar TLS y autenticacion (rediss://), salvo la red interna de Docker");
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Configuracion congelada
@@ -156,7 +202,7 @@ module.exports = Object.freeze({
 
   // Redis. Opcional: si no esta, el sistema opera sin cache.
   cache: Object.freeze({
-    url: textoONull("REDIS_URL"),
+    url: REDIS_URL,
     ttl: entero("CACHE_TTL", 60),
 
     // Namespace de las claves. La cache borra por prefijo y no con FLUSHDB, asi
@@ -171,7 +217,7 @@ module.exports = Object.freeze({
     jwtSecret: JWT_SECRET,
     jwtExpiresIn: entero("JWT_EXPIRES_IN", 86400),
     adminEmail: opcional("ADMIN_EMAIL", "admin@jaquealrey.com").toLowerCase(),
-    adminSecret: textoONull("ADMIN_SECRET"),
+    adminSecret: ADMIN_SECRET,
     bcryptRounds: entero("BCRYPT_ROUNDS", 12),
   }),
 
@@ -214,7 +260,7 @@ module.exports = Object.freeze({
     registro: entero("REGISTER_MAX", 5),
     reserva: entero("RESERVA_MAX", 60),
     reservaPorEmail: entero("RESERVA_POR_EMAIL_MAX", 5),
-    admin: entero("ADMIN_MAX", 60),
+    admin: entero("ADMIN_MAX", 300),
     usuario: entero("USUARIO_MAX", 30),
   }),
 

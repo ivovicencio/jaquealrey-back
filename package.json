@@ -10,6 +10,7 @@
     "test": "node tests/regresion.js",
     "test:expiracion": "node tests/expiracion.test.js",
     "test:e2e": "node tests/e2e-t1.js",
+    "load-test": "node scripts/load-test.js",
     "db:migrate": "node db/run.js",
     "db:list": "node db/run.js --list",
     "db:init": "node db/run.js init.sql",

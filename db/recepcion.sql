@@ -60,10 +60,8 @@ ALTER TABLE Reserva
 -- ===========================================================================
 --
 -- `estado` responde "en qué etapa está la reserva". Estas columnas responden
--- "cuándo pasó". Son cosas distintas: una reserva se puede poner Completada
--- desde la reserva sin pasar por recepción (cierre administrativo), y ahí
--- check_out_at queda en null a propósito. Rellenar el timestamp a mano para que
--- "cuadre" convierte el dato en mentira.
+-- "cuándo pasó". Completada se alcanza por check-out, que registra ambos
+-- timestamps en la misma transacción.
 ALTER TABLE Reserva ADD COLUMN IF NOT EXISTS origen VARCHAR(20);
 ALTER TABLE Reserva ADD COLUMN IF NOT EXISTS check_in_at TIMESTAMPTZ;
 ALTER TABLE Reserva ADD COLUMN IF NOT EXISTS check_out_at TIMESTAMPTZ;
@@ -264,18 +262,6 @@ ALTER TABLE Reserva ADD CONSTRAINT reserva_sin_solapamiento
   )
   WHERE (estado IN ('Pendiente', 'Confirmada', 'En_Casa'));
 
--- El índice parcial tiene que traer exactamente el mismo predicado que la
--- constraint. Con el predicado viejo (sin En_Casa) Postgres no puede usar el
--- índice para verificar la constraint y la sobreventa se evita, pero
--- escaneando el GIST entero en cada intento de reserva.
-DROP INDEX IF EXISTS idx_reserva_fechas_exclusion;
-
-CREATE INDEX idx_reserva_fechas_exclusion
-    ON Reserva USING gist (
-        habitacion_id,
-        daterange(fecha_entrada, fecha_salida, '[)')
-    ) WHERE estado IN ('Pendiente', 'Confirmada', 'En_Casa');
-
 
 -- ===========================================================================
 -- 9. Disponibilidad, ahora con estado operativo y bloqueos
@@ -301,8 +287,8 @@ BEGIN
     FROM Habitacion
     WHERE id = p_habitacion_id AND activa = true;
 
-    -- No existe, o esta fuera de servicio: no se puede reservar.
-    IF v_estado_op IS NULL OR v_estado_op = 'mantenimiento' THEN
+    -- Solo habitaciones operativas para huéspedes pueden reservarse.
+    IF v_estado_op IS NULL OR v_estado_op NOT IN ('libre', 'ocupada') THEN
         RETURN false;
     END IF;
 

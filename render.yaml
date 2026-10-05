@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: jaquealrey-api-demo
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_SECRET
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: DB_POOL_MAX
+        value: "5"
+      - key: BCRYPT_ROUNDS
+        value: "12"
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      - key: RESERVAS_EXPIRAR_HORAS
+        value: "48"
+      - key: RESERVAS_EXPIRAR_CADA_MS
+        value: "900000"

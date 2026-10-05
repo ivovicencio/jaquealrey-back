@@ -64,6 +64,9 @@ function seccion(t) {
 
 (async () => {
   console.log(`Probando ${BASE}\n`);
+  if (!process.env.PGPASSWORD) {
+    throw new Error("PGPASSWORD debe configurarse para que la suite pueda limpiar sus fixtures.");
+  }
 
   // ---------------------------------------------------------------
   // Preflight: la suite gasta ~17 POSTs a /api/reservas y el reservaLimiter
@@ -229,6 +232,22 @@ function seccion(t) {
       malEmail.json?.msg === malCodigo.json?.msg,
       `"${malEmail.json?.msg}" vs "${malCodigo.json?.msg}"`
     );
+
+    const pagoSinDatos = await req("PUT", "/api/reservas/reportar-pago", {
+      body: { codigo, email },
+    });
+    check("avisar transferencia requiere número, referencia y fecha", pagoSinDatos.status === 400, `status ${pagoSinDatos.status}`);
+
+    const pagoFuturo = await req("PUT", "/api/reservas/reportar-pago", {
+      body: {
+        codigo,
+        email,
+        numero_operacion: "TEST-OPERACION",
+        referencia: "TEST-REFERENCIA",
+        fecha_transferencia: "2999-01-01",
+      },
+    });
+    check("avisar transferencia rechaza fecha futura", pagoFuturo.status === 400, `status ${pagoFuturo.status}`);
   }
 
   // ---------------------------------------------------------------
@@ -266,7 +285,7 @@ function seccion(t) {
     const parcial = await req("POST", "/api/reservas", {
       body: {
         nombre: "Parcial", apellido: "Solape", telefono: "1122334455", email: `parcial_${Date.now()}@test.com`,
-        habitacion_id: h2, fecha_entrada: dia(13), fecha_salida: dia(15), huespedes: 2,
+        habitacion_id: h2, fecha_entrada: dia(11), fecha_salida: dia(13), huespedes: 2,
       },
     });
     check("solapamiento parcial rechazado (409)", parcial.status === 409, `status ${parcial.status}`);
@@ -427,6 +446,11 @@ function seccion(t) {
     "expone el alias bancario",
     cfg.json?.data && Object.prototype.hasOwnProperty.call(cfg.json.data, "alias_bancario"),
     JSON.stringify(cfg.json?.data)
+  );
+  check(
+    "no expone el titular ni el banco en la configuracion publica",
+    cfg.json?.data && !("titular_cuenta" in cfg.json.data) && !("banco_nombre" in cfg.json.data),
+    JSON.stringify(Object.keys(cfg.json?.data || {}))
   );
 
   for (const ruta of ["/api/pagos", "/api/pagos/ingresos"]) {
@@ -726,7 +750,7 @@ function seccion(t) {
     host: process.env.PGHOST || "localhost",
     port: parseInt(process.env.PGPORT || "5432", 10),
     user: process.env.PGUSER || "jaquealrey",
-    password: process.env.PGPASSWORD || "jaquealrey123",
+    password: process.env.PGPASSWORD,
     database: process.env.PGDATABASE || "jaquealrey",
   });
   await duenho.connect();
@@ -774,7 +798,7 @@ function seccion(t) {
       host: process.env.PGHOST || "localhost",
       port: parseInt(process.env.PGPORT || "5432", 10),
       user: process.env.PGUSER || "jaquealrey",
-      password: process.env.PGPASSWORD || "jaquealrey123",
+      password: process.env.PGPASSWORD,
       database: process.env.PGDATABASE || "jaquealrey",
     });
     await duenho.connect();

@@ -46,7 +46,6 @@ const {
 } = require("../helpers/whatsappHelper");
 const config = require("../config");
 const clienteService = require("./cliente.service");
-const { leerAnticipoPorcentaje } = require("./configuracion.service");
 const notificationService = require("./notification.service");
 
 const HORAS_CANCELACION = config.reglas.horasCancelacion;
@@ -461,6 +460,28 @@ async function crear(datos, ip, opciones = {}) {
         ]
       );
 
+      if (origen === "recepcion" && estadoInicial === "Confirmada") {
+        await client.query(
+          `INSERT INTO Pago (reserva_id, monto, metodo, estado, fecha_pago, notas)
+           VALUES ($1, $2, 'otro', 'Confirmado', NOW(), $3)`,
+          [
+            creada.rows[0].id,
+            precio_total,
+            "Pago completo recibido en recepción al crear la reserva; medio no especificado",
+          ]
+        );
+        await client.query(
+          `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por, ip_address)
+           VALUES ($1, $2, $3, 'admin', $4)`,
+          [
+            creada.rows[0].id,
+            `Pago confirmado: ${precio_total}`,
+            "Pago completo recibido en recepción al crear la reserva",
+            ip,
+          ]
+        );
+      }
+
       // Consentimiento (PASOS.md 24.5). El front lo exige en el formulario desde
       // el principio pero no lo persistía en ningún lado: sin versión, sin fecha y
       // sin IP, no hay nada que probar.
@@ -611,7 +632,23 @@ async function cancelarPorHuesped({ codigo, email, motivo }, ip) {
  *
  * El huesped se identifica con codigo + email, igual que consultar y cancelar.
  */
-async function reportarPagoPorHuesped({ codigo, email }, ip) {
+async function reportarPagoPorHuesped({
+  codigo,
+  email,
+  numeroOperacion,
+  referencia,
+  fechaTransferencia,
+}, ip) {
+  if (!numeroOperacion.trim()) {
+    throw new AppError("El número de operación es obligatorio", 400);
+  }
+  if (!referencia.trim()) {
+    throw new AppError("La referencia de transferencia es obligatoria", 400);
+  }
+  if (fechaTransferencia > fechaISO(new Date())) {
+    throw new AppError("La fecha de transferencia no puede ser futura", 400);
+  }
+
   const resultado = await withTransaction(async (client) => {
     const encontrada = await client.query(`${CONSULTA_POR_CODIGO} FOR UPDATE OF r`, [codigo, email]);
 
@@ -632,7 +669,7 @@ async function reportarPagoPorHuesped({ codigo, email }, ip) {
        VALUES ($1, 'PagoReportado', $2, 'cliente', $3)`,
       [
         reserva.id,
-        "El huesped informo que realizo la transferencia. La reserva sigue pendiente hasta que el hotel confirme el pago.",
+        `El huesped informo una transferencia. Número de operación: ${numeroOperacion}. Referencia: ${referencia}. Fecha indicada: ${fechaTransferencia}. La reserva sigue pendiente hasta que el hotel confirme el pago.`,
         ip,
       ]
     );
@@ -681,10 +718,8 @@ async function obtenerPorId(id) {
 }
 
 /**
- * Listado paginado con filtros, mas lo pagado de cada reserva.
- *
- * El saldo se calcula en el mismo SELECT con un LEFT JOIN sobre la suma de pagos
- * confirmados, para que el panel no tenga que pedir los pagos de cada fila.
+ * Listado paginado con filtros y suma confirmada para presentar el estado del
+ * pago sin pedir los pagos reserva por reserva.
  */
 async function listar({ estado, desde, hasta, pagina = 1, limite = 20 }) {
   const paginaNum = Math.max(1, parseInt(pagina, 10) || 1);
@@ -744,19 +779,12 @@ async function listar({ estado, desde, hasta, pagina = 1, limite = 20 }) {
  * huesped si el admin guardo el mismo estado dos veces, y para tener los datos de
  * contacto del aviso.
  */
-async function cambiarEstado(id, { estado, notas, forzar_sin_pago }, ip) {
-  // El override llega desde un body JSON donde "false" es un string truthy.
-  // Sin esta normalización, `forzar_sin_pago: "false"` esquivaría el anticipo,
-  // que es exactamente lo que el flag no debe poder hacer.
-  const forzar = forzar_sin_pago === true || forzar_sin_pago === "true" || forzar_sin_pago === 1;
-
+async function cambiarEstado(id, { estado, notas }, ip) {
   // Máquina de estados: solo se permiten estas transiciones
   const TRANSICIONES = {
     Pendiente: ["Confirmada", "Cancelada"],
-    Confirmada: ["En_Casa", "Completada", "Cancelada"],
-    En_Casa: ["Completada"],
+    Confirmada: ["Cancelada"],
     Cancelada: [],
-    Completada: [],
   };
 
   const validos = Object.keys(TRANSICIONES);
@@ -796,35 +824,6 @@ async function cambiarEstado(id, { estado, notas, forzar_sin_pago }, ip) {
       );
     }
 
-    // 3. Confirmar exige el anticipo que el propio hotel le muestra al huesped
-    // en la pantalla de pago. Sin esto el "30%" es decorativo: se confirma
-    // cualquier reserva sin un peso y la deuda aparece al final, cuando ya no
-    // se puede cobrar.
-    if (estado === "Confirmada" && !forzar) {
-      const pagado = await client.query(
-        `SELECT COALESCE(SUM(monto), 0)::float AS total
-         FROM Pago
-         WHERE reserva_id = $1 AND estado = 'Confirmado'`,
-        [id]
-      );
-      const totalPagado = Number(pagado.rows[0].total);
-      const anticipoPct = await leerAnticipoPorcentaje(client);
-      const requerido = (Number(previa.precio_total) * anticipoPct) / 100;
-
-// El "> 0" de abajo es el piso cuando el anticipo está en 0: aún así no
-    // se confirma una reserva que no recibió un peso, porque "sin anticipo" es
-    // una decisión del hotel (0 en la config) y "sin cobrar nada" es otra.
-      if (totalPagado < requerido || totalPagado <= 0) {
-        const falta = Math.max(0, Math.ceil((requerido - totalPagado) * 100) / 100);
-        throw new AppError(
-          `No se puede confirmar: falta el anticipo (${anticipoPct}% = $${requerido.toFixed(2)}, ` +
-            `cobrado $${totalPagado.toFixed(2)}${falta > 0 ? `, faltan $${falta.toFixed(2)}` : ""}). ` +
-            "Si es cortesía o el pago entra después, usá forzar_sin_pago.",
-          409
-        );
-      }
-    }
-
     // 4. UPDATE atómico (solo si el estado sigue siendo el que leímos)
     const result = await client.query(
       `UPDATE Reserva
@@ -841,6 +840,42 @@ async function cambiarEstado(id, { estado, notas, forzar_sin_pago }, ip) {
       );
     }
 
+    // En este sistema, el admin solo cambia a Confirmada después de verificar
+    // el pago completo. Registrar solo la diferencia evita duplicar pagos si ya
+    // había una parte confirmada.
+    if (estado === "Confirmada" && previa.estado !== "Confirmada") {
+      const pagado = await client.query(
+        `SELECT COALESCE(SUM(monto), 0)::float AS total
+         FROM Pago
+         WHERE reserva_id = $1 AND estado = 'Confirmado'`,
+        [id]
+      );
+      const totalPagado = Number(pagado.rows[0].total);
+      const saldo = Number((Number(previa.precio_total) - totalPagado).toFixed(2));
+
+      if (saldo > 0) {
+        await client.query(
+          `INSERT INTO Pago (reserva_id, monto, metodo, estado, fecha_pago, notas)
+           VALUES ($1, $2, 'otro', 'Confirmado', NOW(), $3)`,
+          [
+            id,
+            saldo,
+            "Pago verificado por administración al confirmar la reserva; medio no especificado",
+          ]
+        );
+        await client.query(
+          `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por, ip_address)
+           VALUES ($1, $2, $3, 'admin', $4)`,
+          [
+            id,
+            `Pago confirmado: ${saldo}`,
+            "Registrado al confirmar la reserva después de verificar el pago completo",
+            ip,
+          ]
+        );
+      }
+    }
+
     // 5. Se devuelve la MISMA forma que el GET de detalle, no `RETURNING *`.
     // El panel pisa su objeto con esta respuesta, así que una fila pelada
     // deja la pantalla sin cliente ni habitación después de cada cambio.
@@ -850,14 +885,10 @@ async function cambiarEstado(id, { estado, notas, forzar_sin_pago }, ip) {
     // bitácora dice "cambió a X" cuando ya estaba en X, el hotel no puede
     // reconstruir después qué pasó.
     if (result.rows[0].estado !== previa.estado) {
-      const detalle = forzar
-        ? `${notas || ""} (forzado sin pago)`.trim()
-        : notas || null;
-
       await client.query(
         `INSERT INTO HistorialReserva (reserva_id, accion, detalle, realizada_por, ip_address)
          VALUES ($1, $2, $3, 'admin', $4)`,
-        [id, `Estado cambiado a ${estado}`, detalle, ip]
+        [id, `Estado cambiado a ${estado}`, notas || null, ip]
       );
     }
 
@@ -893,12 +924,12 @@ async function cambiarEstado(id, { estado, notas, forzar_sin_pago }, ip) {
   return reserva;
 }
 /**
- * Check-in: Confirmada (o Pendiente con override) → En_Casa.
+ * Check-in: Confirmada con el pago completo → En_Casa (visible como "En uso").
  *
  * UNA sola transaccion para los tres cambios que tienen que pasar juntos:
  *   1. La reserva pasa a En_Casa con su check_in_at.
  *   2. La habitación pasa a estado_operativo = 'ocupada'.
- *   3. Se guarda documento y nacionalidad del huésped, y se marca verificado_en.
+ *   3. Si recepción informa documento y nacionalidad, se guardan.
  *
  * Si se hicieran por separado y fallara el 2, la reserva quedaría En_Casa con la
  * habitación 'libre': el siguiente que la reserve la sobrevende y la constraint
@@ -912,22 +943,18 @@ async function cambiarEstado(id, { estado, notas, forzar_sin_pago }, ip) {
  * el body viene de un JSON donde "false" es un string truthy.
  */
 async function checkIn(id, datos = {}, ip) {
-  const {
-    documento,
-    nacionalidad,
-    entregado_a,
-    notas,
-    forzar_sin_pago: forzarRaw,
-  } = datos;
-  const forzar = forzarRaw === true || forzarRaw === "true" || forzarRaw === 1;
+  const { documento, nacionalidad, entregado_a, notas } = datos;
+  const documentoLimpio = typeof documento === "string" ? documento.trim() : "";
+  const nacionalidadLimpia = typeof nacionalidad === "string" ? nacionalidad.trim() : "";
 
-  // El documento va con el DNI a la vista, así que pedirlo acá no es fricción.
-  // En la web NO se pide (PASOS.md 24.1): ahí el DNI cuesta la reserva.
-  if (!documento || String(documento).trim().length < 6) {
-    throw new AppError("El documento del huésped es obligatorio para hacer el check-in", 400);
+  if (documentoLimpio && documentoLimpio.length < 6) {
+    throw new AppError("El documento debe tener al menos 6 caracteres", 400);
   }
-  if (!nacionalidad || !String(nacionalidad).trim()) {
-    throw new AppError("La nacionalidad del huésped es obligatoria para hacer el check-in", 400);
+  if (nacionalidadLimpia && nacionalidadLimpia.length < 2) {
+    throw new AppError("La nacionalidad debe tener al menos 2 caracteres", 400);
+  }
+  if (Boolean(documentoLimpio) !== Boolean(nacionalidadLimpia)) {
+    throw new AppError("Documento y nacionalidad deben informarse juntos", 400);
   }
 
   const resultado = await withTransaction(async (client) => {
@@ -959,17 +986,25 @@ async function checkIn(id, datos = {}, ip) {
       return { reserva: detalle.rows[0], previa, repetido: true };
     }
 
-    // Solo entra una reserva confirmada. La Pendiente entra con override
-    // explícito, que es el caso real del walk-in mal cargado: el huésped está
-    // parado en el mostrador, no tiene sentido mandarlo a esperar un pago.
     if (previa.estado !== "Confirmada") {
-      if (!(previa.estado === "Pendiente" && forzar)) {
-        throw new AppError(
-          `No se puede hacer check-in de una reserva ${previa.estado.toLowerCase()}. ` +
-            "Tiene que estar Confirmada.",
-          409
-        );
-      }
+      throw new AppError(
+        `No se puede hacer check-in de una reserva ${previa.estado.toLowerCase()}. ` +
+          "Tiene que estar Confirmada.",
+        409
+      );
+    }
+
+    const pago = await client.query(
+      `SELECT COALESCE(SUM(monto), 0)::float AS total
+       FROM Pago
+       WHERE reserva_id = $1 AND estado = 'Confirmado'`,
+      [id]
+    );
+    if (Number(pago.rows[0].total) + 0.05 < Number(previa.precio_total)) {
+      throw new AppError(
+        "El pago completo debe estar confirmado antes de entregar la llave.",
+        409
+      );
     }
 
     // La habitación tiene que estar en condiciones de recibir gente.
@@ -1009,36 +1044,28 @@ async function checkIn(id, datos = {}, ip) {
       );
     }
 
-    // 2. La habitación. Sin esto la reserva está En_Casa pero la habitación sigue
+    // 2. La habitación. Sin esto la reserva está en uso pero la habitación sigue
     // 'libre' y la siguiente reserva la toma.
     await client.query(
       "UPDATE Habitacion SET estado_operativo = 'ocupada' WHERE id = $1",
       [previa.habitacion_id]
     );
 
-    // 3. Identidad del huésped (PASOS.md 24.2 y 24.3).
-    //
-    // Se pisa documento y nacionalidad, no se completan: si el cliente ya los
-    // tenía cargados de un check-in anterior y ahora muestra otro documento, el
-    // dato nuevo es el que vio recepción recién y el viejo quedó desactualizado.
-    await client.query(
-      `UPDATE Cliente
-       SET documento = $2,
-           nacionalidad = $3,
-           verificado_en = NOW()
-       WHERE id = $1`,
-      [previa.cliente_id, String(documento).trim(), String(nacionalidad).trim()]
-    );
+    if (documentoLimpio && nacionalidadLimpia) {
+      await client.query(
+        `UPDATE Cliente
+         SET documento = $2,
+             nacionalidad = $3,
+             verificado_en = NOW()
+         WHERE id = $1`,
+        [previa.cliente_id, documentoLimpio, nacionalidadLimpia]
+      );
+    }
 
-    // El documento NO va en el detalle de texto. Queda en Cliente.documento con
-    // verificado_en, que es donde se busca cuando hace falta. Copiarlo al
-    // historial lo convertiría en PII duplicada, repartida en una tabla que se lee
-    // por Exportar historial y no por su dueño.
     const detalle = [
-      "Check-in. Documento verificado",
+      documentoLimpio ? "Check-in. Documento verificado" : "Check-in",
       entregado_a ? `Entregado a: ${entregado_a}` : null,
       notas || null,
-      previa.estado === "Pendiente" ? "Ingresó sin confirmar (forzado)" : null,
     ]
       .filter(Boolean)
       .join(". ");
@@ -1068,15 +1095,11 @@ async function checkIn(id, datos = {}, ip) {
  * 'libre', la reserva siguiente se la lleva alguien a quien todavía nadie limpió
  * la habitación. El paso a 'libre' es un botón explícito de "limpieza terminada".
  *
- * El saldo se cierra ANTES (PASOS.md 22.4). Un check-out que deja plata impaga
- * sin avisar es el mismo agujero del paso 3 de la Fase 1: la habitación ya está
- * liberada y la deuda disappeared con ella. Si debe plata, el check-out devuelve
- * 409 con el monto y hay que mandarlo con `forzar_sin_pago` explícito, que queda
- * en la bitácora.
+ * El pago completo debe seguir confirmado antes del check-out. No existe una
+ * opción para completar la estadía dejando el pago pendiente.
  */
 async function checkOut(id, datos = {}, ip) {
-  const { notas, forzar_sin_pago: forzarRaw } = datos;
-  const forzar = forzarRaw === true || forzarRaw === "true" || forzarRaw === 1;
+  const { notas } = datos;
 
   const resultado = await withTransaction(async (client) => {
     const sel = await client.query(
@@ -1111,20 +1134,16 @@ async function checkOut(id, datos = {}, ip) {
       );
     }
 
-    // Saldo pendiente, en la misma transacción y con la reserva bloqueada.
+    // La estadía solo puede cerrarse si el pago completo sigue confirmado.
     const pagado = await client.query(
       `SELECT COALESCE(SUM(monto), 0)::float AS total
        FROM Pago
        WHERE reserva_id = $1 AND estado = 'Confirmado'`,
       [id]
     );
-    const totalPagado = Number(pagado.rows[0].total);
-    const saldo = Number(((Number(previa.precio_total) - totalPagado) * 100).toFixed(2)) / 100;
-
-    if (saldo > 0 && !forzar) {
+    if (Number(pagado.rows[0].total) + 0.05 < Number(previa.precio_total)) {
       throw new AppError(
-        `No se puede cerrar la cuenta: saldo pendiente de $${saldo.toFixed(2)}. ` +
-          "Cobralo, o usá forzar_sin_pago si el huésped se va igual.",
+        "El pago completo debe estar confirmado antes de completar la estadía.",
         409
       );
     }
@@ -1154,7 +1173,6 @@ async function checkOut(id, datos = {}, ip) {
     const detalle = [
       "Check-out",
       notas || null,
-      saldo > 0 ? `Saldo impago: $${saldo.toFixed(2)} (forzado)` : null,
     ]
       .filter(Boolean)
       .join(". ");
@@ -1167,7 +1185,7 @@ async function checkOut(id, datos = {}, ip) {
 
     const detalleReserva = await client.query(SQL_DETALLE, [id]);
 
-    return { reserva: detalleReserva.rows[0], previa, repetido: false, saldo };
+    return { reserva: detalleReserva.rows[0], previa, repetido: false };
   }, ROL.ADMIN);
 
   if (!resultado.repetido) {
@@ -1301,22 +1319,18 @@ async function obtenerHoy() {
             c.nombre AS cliente_nombre, c.apellido AS cliente_apellido,
             c.telefono AS cliente_telefono, c.email AS cliente_email,
             COALESCE(p.pagado, 0)::float AS pagado,
-            (r.precio_total - COALESCE(p.pagado, 0))::float AS saldo
+            (COALESCE(p.pagado, 0) + 0.05 >= r.precio_total) AS pago_completo
      FROM Reserva r
      JOIN Habitacion h ON h.id = r.habitacion_id
      JOIN Cliente c ON c.id = r.cliente_id
-     LEFT JOIN (
-       SELECT reserva_id, SUM(monto) AS pagado
+     LEFT JOIN LATERAL (
+       SELECT SUM(monto) AS pagado
        FROM Pago
-       WHERE estado = 'Confirmado'
-       GROUP BY reserva_id
-     ) p ON p.reserva_id = r.id
-     WHERE r.estado IN ('Confirmada', 'En_Casa')
-       AND (
-         r.fecha_entrada = $1
-         OR r.fecha_salida = $1
-         OR r.estado = 'En_Casa'
-       )
+       WHERE reserva_id = r.id AND estado = 'Confirmado'
+     ) p ON true
+     WHERE r.estado = 'En_Casa'
+        OR (r.estado = 'Confirmada'
+            AND (r.fecha_entrada = $1 OR r.fecha_salida = $1))
      ORDER BY h.numero, r.fecha_entrada`,
     [hoy],
     ROL.ADMIN
@@ -1352,14 +1366,18 @@ async function listarPorVerificar({ horasMinimas = 0 } = {}) {
             h.numero AS habitacion_numero, h.nombre AS habitacion_nombre,
             c.nombre AS cliente_nombre, c.apellido AS cliente_apellido,
             c.telefono AS cliente_telefono, c.email AS cliente_email,
-            (
-              SELECT MAX(hr.created_at)
-              FROM HistorialReserva hr
-              WHERE hr.reserva_id = r.id AND hr.accion = 'PagoReportado'
-            ) AS pago_reportado_at
+            pago_reportado.created_at AS pago_reportado_at,
+            pago_reportado.detalle AS pago_reportado_detalle
      FROM Reserva r
      JOIN Habitacion h ON h.id = r.habitacion_id
      JOIN Cliente c ON c.id = r.cliente_id
+     JOIN LATERAL (
+       SELECT hr.created_at, hr.detalle
+       FROM HistorialReserva hr
+       WHERE hr.reserva_id = r.id AND hr.accion = 'PagoReportado'
+       ORDER BY hr.created_at DESC, hr.id DESC
+       LIMIT 1
+     ) pago_reportado ON true
      WHERE r.estado = 'Pendiente'
        AND EXISTS (
          SELECT 1 FROM HistorialReserva hr

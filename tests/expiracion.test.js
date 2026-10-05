@@ -18,11 +18,14 @@ const {
 // puede hacer: borrar (la limpieza del final) y viajar en el tiempo (backdatear
 // un aviso para simular que pasaron 6 horas). Mismo bootstrap que tests/regresion.js.
 const { Client } = require("pg");
+if (!process.env.PGPASSWORD) {
+  throw new Error("PGPASSWORD debe configurarse para que la suite pueda limpiar sus fixtures.");
+}
 const duenho = new Client({
   host: process.env.PGHOST || "localhost",
   port: parseInt(process.env.PGPORT || "5432", 10),
   user: process.env.PGUSER || "jaquealrey",
-  password: process.env.PGPASSWORD || "jaquealrey123",
+  password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE || "jaquealrey",
 });
 
@@ -302,4 +305,13 @@ VALUES ($1, 'Test confirmada', 'Doble', 2, 10000, true) RETURNING id`,
     JSON.stringify(basura.rows[0])
   );
 
-
+  await duenho.end();
+  await pool.end();
+  console.log(`\nResultado: ${ok} OK, ${fail} FAIL`);
+  if (fail > 0) process.exitCode = 1;
+})().catch(async (error) => {
+  console.error(`[expiracion.test] ${error.message}`);
+  detenerJobExpiracion();
+  await Promise.allSettled([duenho.end(), pool.end()]);
+  process.exitCode = 1;
+});

@@ -63,9 +63,6 @@ async function obtener() {
     reservas_proximas_7_dias: reservasProximas.rows[0].count,
     facturado_mes_actual: facturadoMes,
     cobrado_mes_actual: cobradoMes,
-    // Lo que se facturo en el mes y todavia no se cobro. Es el numero que dice
-    // cuanto hay que perseguir.
-    a_cobrar_mes: Number((facturadoMes - cobradoMes).toFixed(2)),
     total_clientes: totalClientes.rows[0].count,
     habitaciones_activas: totalHabitaciones.rows[0].count,
   };

@@ -20,10 +20,8 @@
 --     Las 16 politicas de rls.sql nunca se ejecutaron: eran decorativas. La
 --     unica defensa real era el WHERE de cada consulta del codigo.
 --
---  2. No habia nada que impidiera la sobreventa. El indice gist de init.sql
---     (idx_reserva_fechas_exclusion) pese al nombre es un CREATE INDEX, o sea
---     que solo acelera la busqueda: no impide dos reservas solapadas en la
---     misma habitacion. Faltaba la constraint EXCLUDE.
+--  2. No habia nada que impidiera la sobreventa. Un indice GIST solo acelera la
+--     busqueda: no impide dos reservas solapadas. Faltaba la constraint EXCLUDE.
 -- ============================================================
 
 -- ----------------------------------------------------------------
@@ -107,7 +105,7 @@ ALTER TABLE Configuracion FORCE ROW LEVEL SECURITY;
 -- ----------------------------------------------------------------
 -- 4. Sobreventa: constraint EXCLUDE de verdad
 -- ----------------------------------------------------------------
--- El indice de init.sql sigue aiding a la performance; esto agrega la garantia.
+-- La propia constraint mantiene el índice GIST necesario para esta garantía.
 -- Ante una carrera entre el SELECT de disponibilidad y el INSERT, la segunda
 -- reserva choca contra la constraint y Postgres la rechaza. Eso ya no depende
 -- de que dos requests lleguen ordenados.

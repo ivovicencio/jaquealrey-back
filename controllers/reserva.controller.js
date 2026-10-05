@@ -46,7 +46,7 @@ reservaCtrl.cancelarPublica = handle(async (req, res) => {
 });
 
 reservaCtrl.reportarPago = handle(async (req, res) => {
-  const { codigo, email } = req.body;
+  const { codigo, email, numero_operacion, referencia, fecha_transferencia } = req.body;
   const codigoLimpio = String(codigo || "").trim();
   const emailLimpio = String(email || "").trim();
 
@@ -55,7 +55,13 @@ reservaCtrl.reportarPago = handle(async (req, res) => {
   }
 
   const reserva = await reservaService.reportarPagoPorHuesped(
-    { codigo: codigoLimpio, email: emailLimpio },
+    {
+      codigo: codigoLimpio,
+      email: emailLimpio,
+      numeroOperacion: numero_operacion.trim(),
+      referencia: referencia.trim(),
+      fechaTransferencia: fecha_transferencia,
+    },
     ipDe(req)
   );
 
@@ -81,13 +87,10 @@ reservaCtrl.getAll = handle(async (req, res) => {
 });
 
 reservaCtrl.updateEstado = handle(async (req, res) => {
-  // `forzar_sin_pago` se pasa entero: si el controller lo filtra, el flag se
-  // pierde en el camino y la reserva queda sin confirmar con un mensaje que no
-  // dice por qué.
-  const { estado, notas, forzar_sin_pago } = req.body;
+  const { estado, notas } = req.body;
   const reserva = await reservaService.cambiarEstado(
     req.params.id,
-    { estado, notas, forzar_sin_pago },
+    { estado, notas },
     ipDe(req)
   );
   return success(res, `Reserva ${estado.toLowerCase()}`, reserva);

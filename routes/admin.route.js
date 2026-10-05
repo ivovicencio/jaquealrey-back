@@ -21,7 +21,12 @@ const habitacionSchema = [
   { name: "numero", type: "number", required: true, min: 1 },
   { name: "nombre", type: "string", required: true, minLength: 2 },
   { name: "capacidad_max", type: "number", required: true, min: 1 },
-  { name: "tipo", type: "string", required: true, enum: ["Doble", "Triple", "Cuádruple"] },
+  {
+    name: "tipo",
+    type: "string",
+    required: true,
+    enum: ["Doble", "Triple", "Cuádruple", "Quíntuple", "Departamento", "Cabaña"],
+  },
   { name: "precio_noche", type: "number", required: true, min: 1 },
 ];
 
@@ -30,14 +35,9 @@ const updateReservaSchema = [
     name: "estado",
     type: "string",
     required: true,
-    enum: ["Pendiente", "Confirmada", "En_Casa", "Cancelada", "Completada"],
+    enum: ["Pendiente", "Confirmada", "Cancelada"],
   },
   { name: "notas", type: "string", maxLength: 500 },
-  // Override deliberado de la regla de anticipo (reserva.service.js). Va
-  // aparte del estado a proposito: confirmar sin plata tiene que ser una
-  // decision consciente del recepcionista, no un efecto secundario de
-  // cambiar el estado. Queda en la bitacora como "(forzado sin pago)".
-  { name: "forzar_sin_pago", type: "boolean" },
 ];
 
 const walkInSchema = [
@@ -45,8 +45,7 @@ const walkInSchema = [
   { name: "apellido", type: "string", minLength: 1 },
   { name: "telefono", type: "string", required: true, minLength: 6 },
   { name: "email", type: "email", required: true },
-  // Documento y nacionalidad se piden en el check-in, no acá (PASOS.md 24.2).
-  // Ver el comentario de checkInSchema: en recepción el DNI está a la vista.
+  // La reserva de recepción tampoco exige datos de documento o nacionalidad.
   { name: "habitacion_id", type: "number", required: true, min: 1 },
   { name: "fecha_entrada", type: "date", required: true },
   { name: "fecha_salida", type: "date", required: true },
@@ -54,29 +53,18 @@ const walkInSchema = [
   { name: "notas", type: "string" },
 ];
 
-/**
- * Check-in. Documento y nacionalidad son requeridos acá y NO en el formulario
- * web (PASOS.md 24.1 y 24.2).
- *
- * En recepción el DNI ya está a la vista, así que pedirlo no cuesta nada. En la
- * web, pedir DNI a alguien parado en la ruta a las 23:00 con Cellular cuesta la
- * reserva, y no hace falta para reservar: eso se pide recién en el check-in.
- */
+/** Check-in: la identidad puede registrarse si el hotel decide hacerlo, pero no bloquea el ingreso. */
 const checkInSchema = [
-  { name: "documento", type: "string", required: true, minLength: 6, maxLength: 30 },
-  { name: "nacionalidad", type: "string", required: true, minLength: 2, maxLength: 60 },
+  { name: "documento", type: "string", minLength: 6, maxLength: 30 },
+  { name: "nacionalidad", type: "string", minLength: 2, maxLength: 60 },
   { name: "entregado_a", type: "string", maxLength: 150 },
   { name: "notas", type: "string", maxLength: 500 },
-  { name: "forzar_sin_pago", type: "boolean" },
 ];
 
-// El check-out no pide nada obligatorio: puede no haber notas. El saldo lo
-// calcula el service y, si debe plata, el 409 lo dice con el monto.
+// El check-out no pide nada obligatorio: puede no haber notas. El servicio
+// comprueba que el pago total esté confirmado.
 const checkOutSchema = [
   { name: "notas", type: "string", maxLength: 500 },
-  // Cierra la cuenta con saldo impago. Queda en la bitácora como
-  // "Saldo impago: $X (forzado)".
-  { name: "forzar_sin_pago", type: "boolean" },
 ];
 
 // 'ocupada' no está en el enum a propósito: el service la rechaza con un
@@ -117,10 +105,8 @@ router.put(
   reservaCtrl.updateEstado
 );
 
-// Recepción. Rutas separadas y no un PUT /estado con un estado más: cada una
-// tiene su propio cuerpo y sus propias reglas (identidad en el check-in, saldo en
-// el check-out), y el dropdown genérico de estados es justo lo que dejó que un
-// admin pusiera En_Casa sin tocar la habitación (PASOS.md 23.3).
+// Recepción. Check-in y check-out actualizan la reserva y la habitación en una
+// transacción; no se reemplazan por cambios genéricos de estado.
 router.post(
   "/reservas/:id/check-in",
   ...adminGuard,

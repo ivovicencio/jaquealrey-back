@@ -430,9 +430,8 @@ async function cambiarEstado(id, { estado, referencia, fecha_pago, notas }, ip) 
  *   cobrado   = SUM(monto) de los pagos confirmados, agrupado por mes en que se
  *               cobraron (fecha_pago)
  *
- * Los dos numeros casi nunca dan igual, y esa diferencia es justamente el dinero
- * que hay que perseguir: anticipos pagados de reservas de meses futuros, y
- * reservas de este mes que todavia no se pagaron.
+ * Los totales se muestran por separado porque corresponden a fechas distintas:
+ * estadía para lo facturado y fecha de recepción para lo cobrado.
  *
  * Una version anterior del dashboard sumaba precio_total por created_at, o sea
  * cuando se creo el registro. Eso mezclaba las dos cosas y ademas corria los
@@ -442,7 +441,7 @@ async function ingresos({ desde } = {}) {
   const filtro = desde ? "AND fecha_salida >= $1" : "";
   const params = desde ? [desde] : [];
 
-  const [facturado, cobrado, totales, saldoPendiente] = await Promise.all([
+  const [facturado, cobrado, totales, pagosIncompletos] = await Promise.all([
     // Facturado por mes de estadia.
     //
     // 'En_Casa' cuenta: la habitacion ocupada hoy tiene una reserva facturada y
@@ -477,10 +476,7 @@ async function ingresos({ desde } = {}) {
       `SELECT
          (SELECT COALESCE(SUM(precio_total), 0)::float FROM Reserva
            WHERE estado IN ('Confirmada','En_Casa','Completada')) AS facturado_total,
-         -- Cobrado alineado con lo facturado: si el pago cuenta, la reserva que
-         -- lo respalda tiene que estar en la misma lista. Antes summationaba
-         -- cualquier pago Confirmado, incluso de una reserva Cancelada, y el
-         -- resultado era un "a cobrar" negativo que no significaba nada.
+         -- Se excluyen pagos asociados a reservas canceladas.
          (SELECT COALESCE(SUM(p.monto), 0)::float
             FROM Pago p JOIN Reserva r ON r.id = p.reserva_id
            WHERE p.estado = 'Confirmado'
@@ -491,7 +487,7 @@ async function ingresos({ desde } = {}) {
       ROL.ADMIN
     ),
 
-    // Pendiente de cobro: reservas ocupadas donde lo pagado no cubre el total.
+    // Se expone el estado del pago, no una cuenta por cobrar.
     executeQuery(
       `SELECT r.id, r.codigo, r.precio_total::float, r.fecha_entrada, r.fecha_salida,
               COALESCE(SUM(p.monto) FILTER (WHERE p.estado = 'Confirmado'), 0)::float AS pagado
@@ -499,7 +495,7 @@ async function ingresos({ desde } = {}) {
        LEFT JOIN Pago p ON p.reserva_id = r.id
        WHERE r.estado IN ('Confirmada', 'En_Casa', 'Completada')
        GROUP BY r.id
-       HAVING COALESCE(SUM(p.monto) FILTER (WHERE p.estado = 'Confirmado'), 0) < r.precio_total
+       HAVING COALESCE(SUM(p.monto) FILTER (WHERE p.estado = 'Confirmado'), 0) + ${EPSILON} < r.precio_total
        ORDER BY r.fecha_salida
        LIMIT 100`,
       [],
@@ -512,16 +508,12 @@ async function ingresos({ desde } = {}) {
   return {
     facturado_total: t.facturado_total,
     cobrado_total: t.cobrado_total,
-    // GREATEST y no un diff a pelo: si por lo que sea se cobro de mas (un pago
-    // que después se anuló), el panel tiene que mostrar 0 y no un saldo
-    // negativo que el hotel/leería como si debiéramos nosotros.
-    a_cobrar_total: Number(Math.max(0, t.facturado_total - t.cobrado_total).toFixed(2)),
     pendiente_confirmar: t.pendiente_total,
     por_mes_facturado: facturado.rows,
     por_mes_cobrado: cobrado.rows,
-    saldo_por_reserva: saldoPendiente.rows.map((r) => ({
+    pagos_incompletos: pagosIncompletos.rows.map((r) => ({
       ...r,
-      saldo: Number((r.precio_total - r.pagado).toFixed(2)),
+      pago_completo: Number(r.pagado) + EPSILON >= Number(r.precio_total),
     })),
   };
 }

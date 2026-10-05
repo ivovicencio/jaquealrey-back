@@ -9,6 +9,7 @@ const adminGuard = [verifyToken, verifyAdmin, adminLimiter];
 router.get("/configuracion", pagoCtrl.getConfiguracionCobro);
 
 // Todo lo demas es del panel del hotel.
+router.get("/configuracion/admin", ...adminGuard, pagoCtrl.getConfiguracionCobroAdmin);
 router.get("/", ...adminGuard, pagoCtrl.getPagos);
 router.get("/ingresos", ...adminGuard, pagoCtrl.getIngresos);
 router.post("/", ...adminGuard, pagoCtrl.createPago);

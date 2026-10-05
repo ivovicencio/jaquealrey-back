@@ -62,7 +62,9 @@ CREATE TABLE Habitacion (
     camas_individuales SMALLINT NOT NULL DEFAULT 0 CHECK (camas_individuales >= 0),
     camas_matrimoniales SMALLINT NOT NULL DEFAULT 0 CHECK (camas_matrimoniales >= 0),
     capacidad_max SMALLINT NOT NULL CHECK (capacidad_max > 0),
-    tipo VARCHAR(20) NOT NULL CHECK (tipo IN ('Doble', 'Triple', 'Cuádruple')),
+    tipo VARCHAR(20) NOT NULL CHECK (
+        tipo IN ('Doble', 'Triple', 'Cuádruple', 'Quíntuple', 'Departamento', 'Cabaña')
+    ),
     precio_noche DECIMAL(10, 2) NOT NULL CHECK (precio_noche > 0),
     activa BOOLEAN NOT NULL DEFAULT true,
     -- Estado operativo, que es distinto de `activa`: `activa = false` es "esta
@@ -133,9 +135,8 @@ CREATE TABLE Reserva (
     -- parado en el mostrador y no publico nada desde la web.
     origen VARCHAR(20) NOT NULL DEFAULT 'public'
         CHECK (origen IN ('public', 'recepcion')),
-    -- Los hechos del check-in, que no son lo mismo que el estado. Una reserva
-    -- puede pasar a Completada desde la reserva (cierre administrativo) y ahi
-    -- check_out_at queda en NULL a proposito.
+    -- Los hechos del check-in, que no son lo mismo que el estado. La
+    -- Completada se alcanza por check-out, que registra ambos timestamps.
     check_in_at TIMESTAMPTZ,
     check_out_at TIMESTAMPTZ,
     entregado_a VARCHAR(150),
@@ -226,20 +227,6 @@ CREATE UNIQUE INDEX idx_cliente_email ON Cliente(LOWER(email));
 -- Reserva: índices compuestos para queries frecuentes
 CREATE INDEX idx_reserva_cliente ON Reserva(cliente_id);
 CREATE INDEX idx_reserva_habitacion ON Reserva(habitacion_id);
-CREATE UNIQUE INDEX idx_reserva_codigo ON Reserva(codigo);
-
--- Índice GIST para solapamiento de fechas (optimiza OVERLAPS)
---
--- El predicado tiene que traer EXACTAMENTE los mismos estados que la
--- constraint EXCLUDE `reserva_sin_solapamiento` de db/security.sql. Si el
--- índice deja afuera un estado que la constraint incluye, la constraint sigue
--- siendo correcta (no hay sobreventa) pero cada intento de reserva tiene que
--- recorrer el GIST entero para verificarla.
-CREATE INDEX idx_reserva_fechas_exclusion
-    ON Reserva USING gist (
-        habitacion_id,
-        daterange(fecha_entrada, fecha_salida, '[)')
-    ) WHERE estado IN ('Pendiente', 'Confirmada', 'En_Casa');
 
 -- Índice B-tree complementario para ordenamiento
 CREATE INDEX idx_reserva_fechas ON Reserva(fecha_entrada, fecha_salida);
@@ -322,8 +309,8 @@ BEGIN
     FROM Habitacion
     WHERE id = p_habitacion_id AND activa = true;
 
-    -- No existe, o esta fuera de servicio: no se puede reservar.
-    IF v_estado_op IS NULL OR v_estado_op = 'mantenimiento' THEN
+    -- Solo habitaciones operativas para huéspedes pueden reservarse.
+    IF v_estado_op IS NULL OR v_estado_op NOT IN ('libre', 'ocupada') THEN
         RETURN false;
     END IF;
 

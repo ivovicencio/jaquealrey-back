@@ -25,6 +25,23 @@ const createReservaSchema = [
 const reportarPagoSchema = [
   { name: "codigo", type: "string", required: true, minLength: 4 },
   { name: "email", type: "email", required: true },
+  {
+    name: "numero_operacion",
+    type: "string",
+    required: true,
+    minLength: 1,
+    maxLength: 80,
+    pattern: /^[A-Za-z0-9 ._#/-]+$/,
+  },
+  {
+    name: "referencia",
+    type: "string",
+    required: true,
+    minLength: 1,
+    maxLength: 80,
+    pattern: /^[A-Za-z0-9 ._#/-]+$/,
+  },
+  { name: "fecha_transferencia", type: "date", required: true },
 ];
 
 const consultarSchema = [
