@@ -45,8 +45,7 @@ $$;
 -- ----------------------------------------------------------------
 -- 2. Permisos que la app necesita
 -- ----------------------------------------------------------------
--- rls.sql le daba privileges a app_admin, un rol que nadie usa: la app nunca
--- hace SET ROLE, solo set_config('app.role'). Asi que los permisos se dan
+-- La app nunca hace SET ROLE, solo set_config('app.role'). Los permisos se dan
 -- directo al rol de aplicacion y el admin/public se resuelve por politica.
 --
 -- OJO con DELETE: no se otorga en bloque. Las tablas donde no se puede borrar

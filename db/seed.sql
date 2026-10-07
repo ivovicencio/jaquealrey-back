@@ -4,13 +4,15 @@
 -- ============================================================
 
 -- Hotel
-INSERT INTO Hotel (nombre, direccion, telefono, descripcion)
+INSERT INTO Hotel (id, nombre, direccion, telefono, descripcion)
 VALUES (
+    1,
     'Jaque al Rey',
     'Julio Argentino Roca, Q8315 Piedra del Águila, Neuquén',
     '02942664320',
     'Hotel familiar en el corazón de Piedra del Águila'
-);
+)
+ON CONFLICT (id) DO NOTHING;
 
 -- Habitaciones
 --
@@ -27,4 +29,5 @@ INSERT INTO Habitacion (numero, nombre, descripcion, camas_individuales, camas_m
 (7, 'Habitación 7', 'Matrimonial con una individual.', 1, 1, 3, 'Triple', 75000),
 (8, 'Habitación 8', 'Matrimonial con dos individuales.', 2, 1, 4, 'Cuádruple', 90000),
 (9, 'Habitación 9', 'Matrimonial con una individual.', 1, 1, 3, 'Triple', 75000),
-(10, 'Habitación 10', 'Matrimonial con dos individuales.', 2, 1, 4, 'Cuádruple', 90000);
+(10, 'Habitación 10', 'Matrimonial con dos individuales.', 2, 1, 4, 'Cuádruple', 90000)
+ON CONFLICT (numero) DO NOTHING;

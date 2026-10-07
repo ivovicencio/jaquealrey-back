@@ -5,41 +5,24 @@
 -- Ejecutar despues de init.sql
 -- ============================================================
 
--- OJO: los roles app_public y app_admin NO se usan para nada. La app conecta con
--- jaquealrey_app, que no es miembro de ninguno de los dos, y tiene los privilegios
--- de tabla directamente. Lo unico que filtra el acceso son las politicas de esta
--- pagina, que leen current_setting('app.role') y current_setting('app.user_id').
+-- La app conecta con jaquealrey_app y tiene los privilegios de tabla directamente.
+-- El acceso de cada consulta lo filtran las politicas, que leen
+-- current_setting('app.role') y current_setting('app.user_id'). No se crean roles
+-- app_public/app_admin: no se usan y requeririan privilegios innecesarios en Neon.
 --
 -- Consecuencia importante: si a una tabla le falta la politica de un comando,
 -- ese comando no da error, simplemente hace match de cero filas. Por ejemplo, si
 -- falta la politica DELETE, un DELETE "exitoso" con rowCount 0 parece un borrado
 -- y en realidad no toco nada. Cada comando usado por la app necesita su politica.
 
--- 1. Crear roles de aplicacion
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_public') THEN
-    CREATE ROLE app_public;
-  END IF;
-  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'app_admin') THEN
-    CREATE ROLE app_admin;
-  END IF;
-END
-$$;
-
--- 2. Permisos esquema
-GRANT USAGE ON SCHEMA public TO app_public, app_admin;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO app_admin;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO app_admin;
-
--- 3. Habilitar RLS en todas las tablas
+-- 1. Habilitar RLS en todas las tablas
 ALTER TABLE Hotel ENABLE ROW LEVEL SECURITY;
 ALTER TABLE Habitacion ENABLE ROW LEVEL SECURITY;
 ALTER TABLE Cliente ENABLE ROW LEVEL SECURITY;
 ALTER TABLE Reserva ENABLE ROW LEVEL SECURITY;
 ALTER TABLE HistorialReserva ENABLE ROW LEVEL SECURITY;
 
--- 4. Políticas: Hotel (lectura pública, escritura admin)
+-- 2. Políticas: Hotel (lectura pública, escritura admin)
 CREATE POLICY hotel_select_public ON Hotel FOR SELECT USING (true);
 CREATE POLICY hotel_insert_admin ON Hotel FOR INSERT
     WITH CHECK (current_setting('app.role', true) = 'admin');
@@ -49,7 +32,7 @@ CREATE POLICY hotel_update_admin ON Hotel FOR UPDATE
 CREATE POLICY hotel_delete_admin ON Hotel FOR DELETE
     USING (current_setting('app.role', true) = 'admin');
 
--- 5. Políticas: Habitación (lectura pública, CRUD admin)
+-- 3. Políticas: Habitación (lectura pública, CRUD admin)
 CREATE POLICY habitacion_select_public ON Habitacion FOR SELECT
     USING (activa = true OR current_setting('app.role', true) = 'admin');
 CREATE POLICY habitacion_insert_admin ON Habitacion FOR INSERT
@@ -60,7 +43,7 @@ CREATE POLICY habitacion_update_admin ON Habitacion FOR UPDATE
 CREATE POLICY habitacion_delete_admin ON Habitacion FOR DELETE
     USING (current_setting('app.role', true) = 'admin');
 
--- 6. Políticas: Cliente
+-- 4. Políticas: Cliente
 CREATE POLICY cliente_insert_public ON Cliente FOR INSERT WITH CHECK (true);
 CREATE POLICY cliente_select_self ON Cliente FOR SELECT
     USING (id::text = current_setting('app.user_id', true)
@@ -74,7 +57,7 @@ CREATE POLICY cliente_update_admin ON Cliente FOR UPDATE
 CREATE POLICY cliente_delete_admin ON Cliente FOR DELETE
     USING (current_setting('app.role', true) = 'admin');
 
--- 7. Politicas: Reserva
+-- 5. Politicas: Reserva
 CREATE POLICY reserva_insert_public ON Reserva FOR INSERT WITH CHECK (true);
 CREATE POLICY reserva_select_self ON Reserva FOR SELECT
     USING (cliente_id::text = current_setting('app.user_id', true)
@@ -83,13 +66,13 @@ CREATE POLICY reserva_update_admin ON Reserva FOR UPDATE
     USING (current_setting('app.role', true) = 'admin')
     WITH CHECK (current_setting('app.role', true) = 'admin');
 
--- 8. Politicas: HistorialReserva
+-- 6. Politicas: HistorialReserva
 CREATE POLICY historial_select_admin ON HistorialReserva FOR SELECT
     USING (current_setting('app.role', true) = 'admin');
 CREATE POLICY historial_insert ON HistorialReserva FOR INSERT
     WITH CHECK (current_setting('app.role', true) = 'admin');
 
--- 9. Politicas: Consentimiento, HabitacionBloqueo, HistorialHabitacion
+-- 7. Politicas: Consentimiento, HabitacionBloqueo, HistorialHabitacion
 -- Estas tres tablas las crea db/init.sql pero sus politicas vivian solo en
 -- db/recepcion.sql. Instalacion nueva = init.sql + rls.sql + security.sql, o
 -- sea que se instalaban SIN RLS: con el GRANT de security.sql el rol de la app
@@ -131,7 +114,7 @@ CREATE POLICY historial_hab_select_admin ON HistorialHabitacion FOR SELECT
 CREATE POLICY historial_hab_insert_admin ON HistorialHabitacion FOR INSERT
     WITH CHECK (current_setting('app.role', true) = 'admin');
 
--- 10. Borrado de reservas: prohibido a proposito
+-- 8. Borrado de reservas: prohibido a proposito
 -- Una reserva no se borra, se cancela cambiando el estado. Borrarla seria
 -- perder el historico y el comprobante de lo que el hotel cobro, y no hay
 -- ningun caso de uso legitimo que lo pida.
